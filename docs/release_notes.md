@@ -1,5 +1,15 @@
 # Release Notes
 
+## v1.0.7 | 2026-06-05
+- 新增 [cross]：实现 cross-mode 测试模块，结合 TxCheck 事务测试与 EET 等价表达式变换
+- 新增 [cross]：`cross_tester` 实现完整交叉测试流程：事务执行 → 拓扑排序路径提取 → 非事务顺序执行 → EET 变换执行 → 三路比较 → 重新验证
+- 新增 [cross]：`cross_run()` 主循环采用 fork-based 模式（与 eet_run/txcheck_run 一致），支持 `--db-test-num`、`--db-table-num`、`--cpu-affinity`、`--ignore-crash` 选项
+- 新增 [cross]：四个检测 oracle：TxCheck 输出 oracle、TxCheck 状态 oracle、EET 输出 oracle、EET 状态 oracle
+- 新增 [cross]：`transform_select()` 对 SELECT/CTE 语句的 WHERE、SELECT list、HAVING 子句应用 `equivalent_transform()`
+- 修复 [core]：`general_process.hh` 中 `#include <schema.hh>` 和 `#include <dut.hh>` 修正为 `"schema/schema.hh"` 和 `"schema/dut.hh"`，修复跨模块编译问题
+- 修复 [txcheck]：`tx_general_process.hh` 同样的 include 路径修正
+- 修复 [eet]：`eet_general_process.hh` 同样的 include 路径修正
+
 ## v1.0.6 | 2026-06-05
 - 合并 [grammar]：TxCheck 事务特性合并入 EET 统一 grammar，`VKEY_IDENT` 硬编码替换为 `schema::get_version_key_name()`，支持 TxCheck 模式使用 `wkey`、EET 模式使用 `vkey`
 - 合并 [grammar]：`insert_select_stmt` 新增 `write_op_id++` 及版本键列覆写逻辑（来自 TxCheck）

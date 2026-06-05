@@ -4,8 +4,8 @@
 #include <string> // for string
 #include <map> // for map
 #include <memory> //for shared_ptr
-#include <schema.hh> // for schema
-#include <dut.hh> // for dut_base
+#include "schema/schema.hh" // for schema
+#include "schema/dut.hh" // for dut_base
 #include <sys/stat.h> // for mkdir
 #include <algorithm> // for sort
 
