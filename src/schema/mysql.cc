@@ -524,9 +524,12 @@ dut_mysql::dut_mysql(string db, unsigned int port)
     has_sent_sql = false;
     txn_abort = false;
     thread_id = mysql_thread_id(&mysql);
+#ifdef HAVE_MYSQL_NONBLOCK
     block_test("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;");
+#endif
 }
 
+#ifdef HAVE_MYSQL_NONBLOCK
 static unsigned long long get_cur_time_ms(void) {
 	struct timeval tv;
 	struct timezone tz;
@@ -554,8 +557,9 @@ bool dut_mysql::check_whether_block(vector<unsigned long>& blocking_tids)
 
     return find_blocked_tid;
 }
+#endif
 
-void dut_mysql::block_test(const string &stmt, 
+void dut_mysql::block_test(const string &stmt,
     vector<vector<string>>* output, 
     int* affected_row_num)
 {
@@ -657,8 +661,9 @@ void dut_mysql::block_test(const string &stmt,
     return;
 }
 
-void dut_mysql::test(const string &stmt, 
-    vector<vector<string>>* output, 
+#ifdef HAVE_MYSQL_NONBLOCK
+void dut_mysql::test(const string &stmt,
+    vector<vector<string>>* output,
     int* affected_row_num,
     vector<string>* env_setting_stmts)
 {
@@ -771,6 +776,108 @@ void dut_mysql::test(const string &stmt,
     sent_sql = "";
     return;
 }
+#else
+// Blocking fallback for environments without mysql_real_query_nonblocking
+void dut_mysql::test(const string &stmt,
+    vector<vector<string>>* output,
+    int* affected_row_num,
+    vector<string>* env_setting_stmts)
+{
+    if (env_setting_stmts) {
+        for (auto& s : *env_setting_stmts) {
+            block_test(s);
+        }
+    }
+
+    if (mysql_real_query(&mysql, stmt.c_str(), stmt.size())) {
+        string err = mysql_error(&mysql);
+        auto result = mysql_store_result(&mysql);
+        mysql_free_result(result);
+        if (err.find("Commands out of sync") != string::npos) {
+            cerr << err << " in test, repeat the statement again" << endl;
+            test(stmt, output, affected_row_num, env_setting_stmts);
+            return;
+        }
+        if (regex_match(err, e_crash)) {
+            throw std::runtime_error("BUG!!! " + err + " in mysql::test");
+        }
+        string prefix = "mysql test expected error:";
+        if (regex_match(err, e_dup_entry)
+            || regex_match(err, e_large_results)
+            || regex_match(err, e_timeout)
+            || regex_match(err, e_col_ambiguous)
+            || regex_match(err, e_truncated)
+            || regex_match(err, e_division_zero)
+            || regex_match(err, e_unknown_col)
+            || regex_match(err, e_incorrect_args)
+            || regex_match(err, e_out_of_range)
+            || regex_match(err, e_win_context)
+            || regex_match(err, e_view_reference)
+            || regex_match(err, e_context_cancel)
+            || regex_match(err, e_string_convert)
+            || regex_match(err, e_col_null)
+            || regex_match(err, e_sridb_pk)
+            || regex_match(err, e_syntax)
+            || regex_match(err, e_invalid_group)
+            || regex_match(err, e_invalid_group_2)
+            || regex_match(err, e_oom)
+            || regex_match(err, e_schema_changed)
+            || regex_match(err, e_over_mem)
+            || regex_match(err, e_no_default)
+            || regex_match(err, e_no_group_by)
+            || regex_match(err, e_no_support_1)
+            || regex_match(err, e_no_support_2)
+            || regex_match(err, e_invalid_arguement)
+            || regex_match(err, e_incorrect_string)
+            || regex_match(err, e_long_specified_key)
+            || regex_match(err, e_out_of_range_2)
+            || regex_match(err, e_table_not_exists)
+           ) {
+            throw runtime_error(prefix + err);
+        }
+        throw std::runtime_error("[" + err + "] in mysql::test");
+    }
+
+    if (affected_row_num)
+        *affected_row_num = mysql_affected_rows(&mysql);
+
+    auto result = mysql_store_result(&mysql);
+    if (mysql_errno(&mysql) != 0) {
+        string err = mysql_error(&mysql);
+        if (regex_match(err, e_out_of_range)
+            || regex_match(err, e_string_convert)
+            || regex_match(err, e_table_not_exists)
+            ) {
+            throw runtime_error("mysql test/mysql_store_result expected error: " + err);
+        }
+        throw std::runtime_error("test: mysql_store_result fails [" + err + "]\nLocation: " + debug_info);
+    }
+
+    if (output && result) {
+        auto row_num = mysql_num_rows(result);
+        if (row_num == 0) {
+            mysql_free_result(result);
+            return;
+        }
+
+        auto column_num = mysql_num_fields(result);
+        while (auto row = mysql_fetch_row(result)) {
+            vector<string> row_output;
+            for (int i = 0; i < column_num; i++) {
+                string str;
+                if (row[i] == NULL)
+                    str = "NULL";
+                else
+                    str = row[i];
+                row_output.push_back(process_an_item(str));
+            }
+            output->push_back(row_output);
+        }
+    }
+    mysql_free_result(result);
+    return;
+}
+#endif
 
 void dut_mysql::reset(void)
 {
@@ -834,6 +941,12 @@ int dut_mysql::save_backup_file(string testdb, string path)
     return system(cp_cmd.c_str());
 }
 
+int dut_mysql::use_backup_file(string backup_file)
+{
+    string cp_cmd = "cp " + backup_file + " /tmp/mysql_bk.sql";
+    return system(cp_cmd.c_str());
+}
+
 void dut_mysql::get_content(vector<string>& tables_name, map<string, vector<vector<string>>>& content)
 {
     for (auto& table:tables_name) {
@@ -869,9 +982,11 @@ void dut_mysql::get_content(vector<string>& tables_name, map<string, vector<vect
     }
 }
 
+#ifdef HAVE_MYSQL_NONBLOCK
 string dut_mysql::get_process_id() {
     return to_string(thread_id);
 }
+#endif
 
 string dut_mysql::begin_stmt() {
     return "START TRANSACTION";
@@ -885,6 +1000,7 @@ string dut_mysql::abort_stmt() {
     return "ROLLBACK";
 }
 
+#ifdef HAVE_MYSQL_NONBLOCK
 pid_t dut_mysql::fork_db_server()
 {
     pid_t child = fork();
@@ -902,10 +1018,11 @@ pid_t dut_mysql::fork_db_server()
         server_argv[i++] = (char *)"--user=mysql";
         server_argv[i++] = NULL;
         execv(server_argv[0], server_argv);
-        cerr << "fork mysql server fail \nLocation: " + debug_info << endl; 
+        cerr << "fork mysql server fail \nLocation: " + debug_info << endl;
     }
-    
+
     sleep(3);
     cout << "server pid: " << child << endl;
     return child;
 }
+#endif

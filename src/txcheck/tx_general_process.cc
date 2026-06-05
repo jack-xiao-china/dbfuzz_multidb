@@ -412,7 +412,7 @@ bool compare_content(map<string, vector<vector<string>>>&a_content,
         return false;
     }
     
-    for (auto iter = a_content.begin(); iter != a_content.begin(); iter++) {
+    for (auto iter = a_content.begin(); iter != a_content.end(); iter++) {
         auto& table = iter->first;
         auto& con_table_content = iter->second;
         

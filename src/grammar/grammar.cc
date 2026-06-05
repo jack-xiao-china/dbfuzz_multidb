@@ -743,7 +743,7 @@ insert_stmt::insert_stmt(prod *p, struct scope *s, table *v, bool only_const)
             if (find(valued_column_name.begin(), valued_column_name.end(), col.name) == valued_column_name.end())
                 continue;
             
-            if (col.name == VKEY_IDENT) {
+            if (col.name == schema::get_version_key_name()) {
                 auto expr = make_shared<const_expr>(this, col.type);
                 assert(expr->type == col.type);
                 expr->expr = to_string(write_op_id); // use write_op_id
@@ -826,11 +826,11 @@ set_list::set_list(prod *p, table *target) : prod(p), myscope(p->scope)
             if (name_set.count(col.name) != 0)
                 continue;
             
-            if (col.name == VKEY_IDENT) {
+            if (col.name == schema::get_version_key_name()) {
                 auto  expr = make_shared<const_expr>(this, col.type);
                 assert(expr->type == col.type);
                 expr->expr = to_string(write_op_id); // use write_op_id
-                
+
                 value_exprs.push_back(expr);
                 names.push_back(col.name);
                 name_set.insert(col.name);
@@ -1359,9 +1359,9 @@ create_table_stmt::create_table_stmt(prod *parent, struct scope *s)
     table_name = unique_table_name(scope);
     created_table = make_shared<struct table>(table_name, "main", true, true);
 
-    // create at least one integer column, which make index has at least one choice 
-    // generate vkey (identify different versions)
-    column wkey(VKEY_IDENT, scope->schema->inttype);
+    // create at least one integer column, which make index has at least one choice
+    // generate vkey/wkey (identify different versions, depends on require_pkey_wkey mode)
+    column wkey(schema::get_version_key_name(), scope->schema->inttype);
     constraints.push_back(""); // no constraint
     created_table->columns().push_back(wkey);
     
@@ -1660,7 +1660,7 @@ prod(parent), myscope(s)
         column *column_ref;
         while (1) {
             column_ref = &random_pick(table_ref->columns());
-            if (column_ref->name != PKEY_IDENT && column_ref->name != VKEY_IDENT)
+            if (column_ref->name != PKEY_IDENT && column_ref->name != schema::get_version_key_name())
                 break;
         }
 
@@ -2093,12 +2093,33 @@ insert_select_stmt::insert_select_stmt(prod *p, struct scope *s, table *v)
 
     vector<sqltype *> pointed_type;
     // select all columns to eliminate all non-determinism
+    // version key column is placed first so we can override it with write_op_id
+    string vkey_name = schema::get_version_key_name();
+    valued_column_name.push_back(vkey_name);
     for (auto& col : victim->columns()) {
+        if (col.name == vkey_name || col.name == PKEY_IDENT)
+            continue;
         valued_column_name.push_back(col.name);
-        pointed_type.push_back(col.type);
     }
 
+    for (auto& name : valued_column_name) {
+        for (auto& col : victim->columns()) {
+            if (col.name == name) {
+                pointed_type.push_back(col.type);
+                break;
+            }
+        }
+    }
+
+    write_op_id++;
     target_subquery = make_shared<query_spec>(this, scope, false, &pointed_type);
+    // override version key column with write_op_id
+    auto &select_exprs = target_subquery->select_list->value_exprs;
+    auto vkey_expr = make_shared<const_expr>(this, select_exprs.front()->type);
+    vkey_expr->expr = to_string(write_op_id);
+    select_exprs.erase(select_exprs.begin());
+    select_exprs.insert(select_exprs.begin(), vkey_expr);
+    select_exprs.front()->type = vkey_expr->type;
 
     // Do not recover, because equivalent transform may also use the scope 
     // And recovering is unnecessary.

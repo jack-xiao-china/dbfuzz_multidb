@@ -14,7 +14,7 @@
 using namespace std;
 
 #define SHOW_CHARACTERS 100
-#define SPACE_HOLDER_STMT "select 1 from (select 1) as subq_0 where 0 <> 0"
+// SPACE_HOLDER_STMT is defined in grammar/grammar.hh
 
 struct transaction {
     shared_ptr<dut_base> dut;

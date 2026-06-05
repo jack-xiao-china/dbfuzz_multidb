@@ -555,6 +555,10 @@ struct set_stmt : prod {
   }
 };
 
+#define SPACE_HOLDER_STMT "select 1 from (select 1) as subq_0 where 0 <> 0"
+
+extern int write_op_id;
+
 shared_ptr<prod> statement_factory(struct scope *s);
 shared_ptr<prod> ddl_statement_factory(struct scope *s);
 shared_ptr<prod> basic_dml_statement_factory(struct scope *s);

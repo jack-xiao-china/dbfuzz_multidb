@@ -20,6 +20,7 @@
 #define PKEY_INDEX 1
 #define PKEY_IDENT "pkey"
 #define VKEY_IDENT "vkey"
+#define WKEY_IDENT "wkey"
 
 using namespace std;
 

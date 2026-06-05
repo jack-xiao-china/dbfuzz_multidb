@@ -12,6 +12,7 @@
 
 #include "core/relmodel.hh"
 #include "core/random.hh"
+#include "core/prod.hh"
 
 #define BINOP(n, a, b, r) do {\
     op o(#n, a, b, r); \
@@ -156,7 +157,12 @@ struct schema {
     vector<string> supported_join_op;
     vector<string> supported_table_engine;
     map<string, vector<string>> supported_setting;
-  
+    static bool require_pkey_wkey;
+
+    static string get_version_key_name() {
+        return require_pkey_wkey ? WKEY_IDENT : VKEY_IDENT;
+    }
+
     virtual std::string quote_name(const std::string &id) = 0;
   
     void summary() {

@@ -10,6 +10,7 @@ using namespace std;
 using namespace pqxx;
 
 string schema::target_dbms = "";
+bool schema::require_pkey_wkey = false;
 
 void schema::generate_indexes() {
     // enable aggregate function

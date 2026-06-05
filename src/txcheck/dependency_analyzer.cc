@@ -281,8 +281,8 @@ void dependency_analyzer::build_VS_dependency()
                 }
 
                 set<int> res;
-                set_intersection(i_primary_set.begin(), i_primary_set.begin(),
-                    before_write_primary_set.begin(), before_write_primary_set.begin(),
+                set_intersection(i_primary_set.begin(), i_primary_set.end(),
+                    before_write_primary_set.begin(), before_write_primary_set.end(),
                     inserter(res, res.begin()));
                 if (res.empty()) { // if it is emtpy, the row is deleted
                     if (i_tid != j_tid)
@@ -408,8 +408,8 @@ void dependency_analyzer::build_OW_dependency()
                     after_write_primary_set.insert(row_id);
                 }
                 set<int> res;
-                set_intersection(i_primary_set.begin(), i_primary_set.begin(),
-                    after_write_primary_set.begin(), after_write_primary_set.begin(),
+                set_intersection(i_primary_set.begin(), i_primary_set.end(),
+                    after_write_primary_set.begin(), after_write_primary_set.end(),
                     inserter(res, res.begin()));
                 if (res.empty()) { // if it is emtpy, the row is not inserted yet
                     if (i_tid != j_tid)

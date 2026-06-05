@@ -59,7 +59,14 @@ struct dut_base {
   virtual void reset_to_backup(void) = 0;
   
   virtual void get_content(vector<string>& tables_name, map<string, vector<vector<string>>>& content) = 0;
-  // virtual string get_process_id() = 0;
+
+  // Transaction methods with default implementations (EET mode DUTs don't need to override)
+  virtual string commit_stmt() { return "COMMIT"; }
+  virtual string abort_stmt()  { return "ROLLBACK"; }
+  virtual string begin_stmt()  { return "START TRANSACTION"; }
+
+  // Process management (default empty, only MySQL/MariaDB override for blocking detection)
+  virtual string get_process_id() { return ""; }
 };
 
 

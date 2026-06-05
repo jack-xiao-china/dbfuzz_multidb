@@ -56,33 +56,34 @@ instrumentor::instrumentor(vector<shared_ptr<prod>>& stmt_queue,
                                     update_statement->victim, update_statement->search);
             
             used_scope.new_stmt(); // for after_write_select_stmt
-            // get wkey idex
+            // get version key idex
             auto table = update_statement->victim;
             int wkey_idx = -1;
             auto& columns = table->columns();
             int t_size = columns.size();
+            auto version_key_name = db_schema->get_version_key_name();
             for (int i = 0; i < t_size; i++) {
-                if (columns[i].name == "wkey") {
+                if (columns[i].name == version_key_name) {
                     wkey_idx = i;
                     break;
                 }
             }
             if (wkey_idx == -1) {
                 cerr << "problem stmt:\n" << print_stmt_to_string(update_statement) << endl;
-                throw runtime_error("intrument update statement: cannot find wkey");
+                throw runtime_error("intrument update statement: cannot find " + version_key_name);
             }
             
-            // get wkey value
+            // get version key value
             int wkey_set_idx = -1;
             auto names_size = update_statement->set_list->names.size();
             for (int i = 0; i < names_size; i++) {
-                if (update_statement->set_list->names[i] == "wkey") {
+                if (update_statement->set_list->names[i] == version_key_name) {
                     wkey_set_idx = i;
                     break;
                 }
             }
             if (wkey_set_idx == -1)
-                throw runtime_error("intrument update statement: cannot find wkey = expr");
+                throw runtime_error("intrument update statement: cannot find " + version_key_name + " = expr");
 
             auto wkey_value = update_statement->set_list->value_exprs[wkey_set_idx];
 
@@ -159,20 +160,21 @@ instrumentor::instrumentor(vector<shared_ptr<prod>>& stmt_queue,
         auto insert_statement = dynamic_pointer_cast<insert_stmt>(stmt);
         if (insert_statement) {
             used_scope.new_stmt(); // for select_stmt
-            // get wkey idex
+            // get version key idex
             auto table = insert_statement->victim;
             int wkey_idx = -1;
             auto& columns = table->columns();
             int t_size = columns.size();
+            auto version_key_name = db_schema->get_version_key_name();
             for (int i = 0; i < t_size; i++) {
-                if (columns[i].name == "wkey") {
+                if (columns[i].name == version_key_name) {
                     wkey_idx = i;
                     break;
                 }
             }
             if (wkey_idx == -1) {
                 cerr << "problem stmt:\n" << print_stmt_to_string(insert_statement) << endl;
-                throw runtime_error("intrument insert statement: cannot find wkey");
+                throw runtime_error("intrument insert statement: cannot find " + version_key_name);
             }
 
             // get wkey value

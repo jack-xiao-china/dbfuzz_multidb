@@ -44,18 +44,23 @@ struct dut_mysql : dut_base, mysql_connection {
     virtual string begin_stmt();
 
     virtual void get_content(vector<string>& tables_name, map<string, vector<vector<string>>>& content);
+#ifdef HAVE_MYSQL_NONBLOCK
     virtual string get_process_id();
 
     static pid_t fork_db_server();
+#endif
     dut_mysql(string db, unsigned int port);
 
     static int save_backup_file(string testdb, string path);
+    static int use_backup_file(string backup_file);
     void block_test(const string &stmt, vector<vector<string>>* output = NULL, int* affected_row_num = NULL);
+#ifdef HAVE_MYSQL_NONBLOCK
     bool check_whether_block(vector<unsigned long>& blocking_tids);
     bool has_sent_sql;
     string sent_sql;
     bool txn_abort;
     unsigned long thread_id;
+#endif
 };
 
 #endif

@@ -57,6 +57,7 @@ shared_ptr<schema> get_schema(dbms_info& d_info)
             throw runtime_error("Unsupported DBMS in get_schema()");
         }
         dbms_execution_ms = dbms_execution_ms + (get_cur_time_ms() - schema_start);
+        schema::require_pkey_wkey = d_info.require_pkey_wkey;
 
     } catch (exception &e) { // may occur occastional error
         dbms_execution_ms = dbms_execution_ms + (get_cur_time_ms() - schema_start);
