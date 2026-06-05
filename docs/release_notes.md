@@ -1,5 +1,10 @@
 # Release Notes
 
+## v1.0.8 | 2026-06-05
+- 新增 [infra]：添加 `docker-compose.yml`，支持 MySQL/MariaDB/PostgreSQL/TiDB/ClickHouse 容器化测试，使用 Docker profiles 按模式启动
+- 新增 [infra]：添加 `script/run_tests.sh` 统一测试运行脚本，支持 `./script/run_tests.sh <mode> [dbms]` 一键构建和测试
+- 优化 [docs]：重写 `CLAUDE.md`，完整覆盖三种测试模式、七个 CMake 模块、所有支持的 DBMS、条件编译宏、门禁脚本
+
 ## v1.0.7 | 2026-06-05
 - 新增 [cross]：实现 cross-mode 测试模块，结合 TxCheck 事务测试与 EET 等价表达式变换
 - 新增 [cross]：`cross_tester` 实现完整交叉测试流程：事务执行 → 拓扑排序路径提取 → 非事务顺序执行 → EET 变换执行 → 三路比较 → 重新验证
