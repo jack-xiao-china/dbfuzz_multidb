@@ -1,7 +1,7 @@
 #pragma once
 
 #include "expr/bool_expr/bool_expr.hh"
-#include "../case_expr.hh"
+#include "expr/case_expr.hh"
 
 struct in_query : bool_expr
 {

@@ -1,5 +1,5 @@
 #include "expr/bool_expr/bool_binop/bool_term.hh"
-#include "../../expr.hh"
+#include "expr/expr.hh"
 
 bool_term::bool_term(prod *p) : bool_binop(p)
 {

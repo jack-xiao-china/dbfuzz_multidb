@@ -1,5 +1,5 @@
 #include "expr/bool_expr/const_bool.hh"
-#include "../expr.hh"
+#include "expr/expr.hh"
 
 const_bool::const_bool(prod *p) : bool_expr(p)
 {

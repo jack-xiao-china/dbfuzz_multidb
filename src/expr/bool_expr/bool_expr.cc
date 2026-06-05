@@ -1,5 +1,5 @@
 #include "expr/bool_expr/bool_expr.hh"
-#include "../expr.hh"
+#include "expr/expr.hh"
 
 shared_ptr<bool_expr> bool_expr::factory(prod *p)
 {

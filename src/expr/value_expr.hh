@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../prod.hh"
-#include "../relmodel.hh"
-#include "../schema.hh"
+#include "core/prod.hh"
+#include "core/relmodel.hh"
+#include "schema/schema.hh"
 #include <string>
 
 using namespace std;

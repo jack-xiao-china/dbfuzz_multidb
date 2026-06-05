@@ -2,6 +2,19 @@
 
 dbms_info::dbms_info(map<string,string>& options)
 {
+    // Parse test mode
+    if (options.count("mode")) {
+        string m = options["mode"];
+        if (m == "txcheck")      mode = MODE_TXCHECK;
+        else if (m == "cross")   mode = MODE_CROSS;
+        else                     mode = MODE_EET;
+    } else {
+        mode = MODE_EET;
+    }
+
+    // Set require_pkey_wkey based on mode
+    require_pkey_wkey = (mode == MODE_TXCHECK || mode == MODE_CROSS);
+
     if (false) {}
     #ifdef HAVE_LIBSQLITE3
     else if (options.count("sqlite")) {
@@ -12,7 +25,7 @@ dbms_info::dbms_info(map<string,string>& options)
     }
     #endif
 
-    #ifdef HAVE_LIBMYSQLCLIENT
+    #ifdef HAVE_MYSQL
     else if (options.count("tidb-db") && options.count("tidb-port")) {
         dbms_name = "tidb";
         test_port = stoi(options["tidb-port"]);
@@ -25,6 +38,14 @@ dbms_info::dbms_info(map<string,string>& options)
         test_db = options["mysql-db"];
         can_trigger_error_in_txn = true;
     }
+    #ifdef HAVE_MARIADB
+    else if (options.count("mariadb-db") && options.count("mariadb-port")) {
+        dbms_name = "mariadb";
+        test_port = stoi(options["mariadb-port"]);
+        test_db = options["mariadb-db"];
+        can_trigger_error_in_txn = true;
+    }
+    #endif
     else if (options.count("oceanbase-db") && options.count("oceanbase-port") && options.count("oceanbase-host")) {
         dbms_name = "oceanbase";
         test_port = stoi(options["oceanbase-port"]);
@@ -74,6 +95,23 @@ dbms_info::dbms_info(map<string,string>& options)
         ouput_or_affect_num = stoi(options["output-or-affect-num"]);
     else
         ouput_or_affect_num = 0;
+
+    // EET mode specific options
+    if (options.count("db-test-num"))
+        db_test_num = stoi(options["db-test-num"]);
+    else
+        db_test_num = 50;
+
+    if (options.count("db-table-num"))
+        db_table_num = stoi(options["db-table-num"]);
+    else
+        db_table_num = 0;
+
+    // Ignore crash flag
+    if (options.count("ignore-crash"))
+        ignore_crash = true;
+    else
+        ignore_crash = false;
 
     return;
 }

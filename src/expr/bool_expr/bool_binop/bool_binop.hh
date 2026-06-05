@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../bool_expr.hh"
+#include "expr/bool_expr/bool_expr.hh"
 
 struct bool_binop : bool_expr
 {

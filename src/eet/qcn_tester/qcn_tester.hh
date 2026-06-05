@@ -1,11 +1,11 @@
 #ifndef QCN_TESTER_HH
 #define QCN_TESTER_HH
 
-#include "../dbms_info.hh"
-#include "../schema.hh"
-#include "../prod.hh"
-#include "../grammar.hh"
-#include "../general_process.hh"
+#include "core/dbms_info.hh"
+#include "schema/schema.hh"
+#include "core/prod.hh"
+#include "grammar/grammar.hh"
+#include "core/general_process.hh"
 
 using namespace std;
 
