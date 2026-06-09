@@ -1,11 +1,21 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#endif
+
 #cmakedefine HAVE_MYSQL
 #cmakedefine HAVE_TIDB
 #cmakedefine HAVE_MARIADB
 #cmakedefine HAVE_MYSQL_NONBLOCK
 #cmakedefine HAVE_LIBSQLITE3
+#cmakedefine HAVE_BOOST_REGEX
+
+#cmakedefine PQXX_FOUND
+#cmakedefine PostgreSQL_FOUND
 
 #define PROJECT_VERSION "@PROJECT_VERSION@"
 

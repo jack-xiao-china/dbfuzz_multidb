@@ -1,4 +1,4 @@
-#include "transaction_test.hh"
+#include "txcheck/transaction_test.hh"
 
 #define MAX_CONCURRENT_TXN_NUM  3
 #define TXN_NUM (MAX_CONCURRENT_TXN_NUM * 2)
@@ -621,14 +621,6 @@ void transaction_test::save_test_case(string dir_name,
 int transaction_test::record_bug_num = 0;
 pid_t transaction_test::server_process_id = 0xabcde;
 
-static unsigned long long get_cur_time_ms(void) {
-	struct timeval tv;
-	struct timezone tz;
-
-	gettimeofday(&tv, &tz);
-
-	return (tv.tv_sec * 1000ULL) + tv.tv_usec / 1000;
-}
 
 void kill_process_with_SIGTERM(pid_t process_id)
 {

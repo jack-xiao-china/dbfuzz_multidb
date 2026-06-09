@@ -1,5 +1,46 @@
 # Release Notes
 
+## v1.0.11 | 2026-06-09
+- 新增 [schema]：GaussDB 驱动 — 支持 GaussDB-M（MySQL 兼容模式）和 GaussDB-A（Oracle 兼容模式），基于 PostgreSQL 协议（libpq），统一 gaussdb.hh/cc 实现
+- 新增 [schema]：GaussDB `reset()` — 使用 PL/pgSQL 批量 DROP TABLE/SEQUENCE/INDEX CASCADE 清理 public schema（GaussDB 不支持 `DROP DATABASE WITH (FORCE)` 且 `DROP DATABASE` 等价于 `DROP SCHEMA`）
+- 新增 [schema]：GaussDB SQL 备份/恢复 — `backup()` 复制 `db_setup.sql`，`reset_to_backup()` 通过 libpq 逐条执行 SQL 恢复（不依赖 pg_dump/psql 外部工具）
+- 新增 [CLI]：`--gaussdb-m-db/port/host/user/pass` 和 `--gaussdb-a-db/port/host/user/pass` 命令行选项
+- 修复 [schema]：MySQL `dut_mysql::backup()` 错误消息误写为 `dut_tidb::backup`（复制粘贴 Bug）
+- 修复 [schema]：MySQL 新增 5 个预期错误模式 — `Failed to open the referenced table`、`Statement requires a transform of a subquery`、`Cannot add or update a child row`（FK 约束）、`Failed to add the foreign key constraint`
+- 修复 [core]：`interect_test()` / `normal_test()` 中 `abort()` 过于激进 — DDL/DML 生成阶段的随机 SQL 错误不应导致 fuzzer 崩溃，改为仅在 BUG/CONNECTION FAIL 时 abort
+- 修复 [eet]：`eet_run.cc` / `cross_main.cc` 中 `generate_database` 的 `abort()` 同上修复
+- 修复 [eet]：`qcn_tester.cc` 两处 `abort()` 同上修复 — `execute_query()` 和 `execute_query_with_update()`
+- 修复 [schema]：PostgreSQL `backup()` / `reset_to_backup()` — 替换 pg_dump/psql 为 SQL 方式（`db_setup.sql` 复制 + libpq 逐条执行），解决 pg_dump.exe 在 WSL 中挂起的问题
+- 修复 [schema]：PostgreSQL `reset_to_backup()` 多行 SQL 语句解析 — 累积行至分号后执行，避免截断 CREATE TABLE 等多行语句
+- 新增 [schema]：GaussDB 类型系统兼容 — 处理 `'s'`（set pseudotype）和 `'u'`（undefined）GaussDB 特有 typtype
+- 修复 [schema]：GaussDB `oid2type` 查找空指针保护 — 算子/函数/参数类型查找失败时安全跳过，避免段错误
+- 修复 [schema]：GaussDB `information_schema.tables` — 使用 `'YES' as is_insertable_into` 替代不存在的列
+
+## v1.0.10 | 2026-06-08
+- 新增 [schema]：MySQL 8.x `supported_setting` 配置 — 18 个 optimizer_switch 选项（batch_key_access, block_nested_loop, hash_join 等），EET 模式可随机注入优化器配置
+- 修复 [schema]：MySQL `HAVE_MYSQL_NONBLOCK` 版本 `test()` 方法缺失 `env_setting_stmts` 执行，添加同步 SET 语句执行
+- 新增 [schema]：PostgreSQL crash 检测 — `test()` 方法中添加 `PQstatus(conn) == CONNECTION_BAD` 检查，连接断开时 throw "BUG!!!"
+- 新增 [schema]：PostgreSQL `is_expected_error()` 添加 crash 相关模式（server closed the connection unexpectedly 等）
+- 新增 [schema]：YugabyteDB crash 检测 — 同 PostgreSQL 模式，`is_expected_error()` + CONNECTION_BAD 检查
+- 新增 [schema]：CockroachDB crash 检测 — `is_expected_error()` 添加 connection reset/refused/broken pipe 模式 + CONNECTION_BAD 检查
+- 新增 [schema]：ClickHouse crash 检测 — 添加 Connection refused / Broken pipe / Connection reset / NETWORK_ERROR 等模式
+- 完善 [cross]：Bug 报告格式 — `save_bug_report()` 保存 `normal_stmts.sql`、`eet_select_stmts.sql`、`tx_results.out`、`normal_results.out`、`eet_select_results.out`、`db_backup.sql`
+- 新增 [cross]：测试用例最小化 — `minimize()` 方法实现两阶段约减：语句级删除（Phase 1）+ SELECT 变换回退（Phase 2），保存最小化结果到 `minimized/` 子目录
+
+## v1.0.9 | 2026-06-08
+- 修复 [build]：解决 header guard 冲突 — `core/general_process.hh`、`txcheck/tx_general_process.hh`、`eet/eet_general_process.hh` 原共用 `GENERAL_PROCESS_HH`，导致 include 互相屏蔽；改为唯一 guard `GENERAL_PROCESS_HH` / `TX_GENERAL_PROCESS_HH` / `EET_GENERAL_PROCESS_HH`
+- 重构 [txcheck]：`tx_general_process.hh` 改为 `#include "core/general_process.hh"` + txcheck 独有声明，消除 ~100 行重复
+- 重构 [eet]：`eet_general_process.hh` 改为 `#include "core/general_process.hh"`，`eet_general_process.cc` 清空所有 28 个重复函数实现（全部由 core 提供）
+- 重构 [txcheck]：`tx_general_process.cc` 移除 19 个与 core 重复的函数实现，只保留 txcheck 独有和签名不同的 3 个重载
+- 修复 [CMake]：`HAVE_MYSQL_NONBLOCK` 重定义警告 — 从 `COMMON_DEFS` 移除，统一由 `config.h` `#cmakedefine` 管理；同时设置 `HAVE_MYSQL=1`、`HAVE_TIDB=1`、`HAVE_LIBSQLITE3=1` CMake 变量确保 config.h 正确生成
+- 修复 [schema]：`postgres.cc` 缺少 `#include <unistd.h>` 导致 `access()` 未声明
+- 修复 [txcheck]：`transaction_test.cc` 中 `static get_cur_time_ms()` 与 `general_process.hh` 的 extern 声明冲突，删除 static 定义
+- 修复 [txcheck]：`dependency_analyzer.cc` 使用 `#include <dependency_analyzer.hh>` 找不到文件，改为引号形式 `#include "dependency_analyzer.hh"`
+- 修复 [txcheck]：`dependency_analyzer.cc` 中 `register` 关键字不符合 C++17，移除
+- 修复 [txcheck]：`save_backup_file` 调用签名不匹配（`dut_mysql`/`dut_tidb`/`dut_mariadb` 需要 2 个参数）
+- 新增 [schema]：`dut_tidb::use_backup_file()` 方法和实现（TiDB 基于 MySQL 协议）
+- 修复 [txcheck]：`txcheck_run.cc` 和 `tx_main.cc` 中 `generate_database(d_info)` 缺少第二参数，改为 `generate_database(d_info, 0)`
+
 ## v1.0.8 | 2026-06-05
 - 新增 [infra]：添加 `docker-compose.yml`，支持 MySQL/MariaDB/PostgreSQL/TiDB/ClickHouse 容器化测试，使用 Docker profiles 按模式启动
 - 新增 [infra]：添加 `script/run_tests.sh` 统一测试运行脚本，支持 `./script/run_tests.sh <mode> [dbms]` 一键构建和测试

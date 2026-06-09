@@ -29,11 +29,17 @@ static void print_usage() {
     "DBMS connections (provide at least one):" << endl <<
     "    --mysql-db=str        MySQL database name" << endl <<
     "    --mysql-port=int      MySQL server port" << endl <<
+    "    --mysql-host=str      MySQL server host (default: 127.0.0.1)" << endl <<
+    "    --mysql-user=str      MySQL user (default: root)" << endl <<
+    "    --mysql-pass=str      MySQL password" << endl <<
     "    --mariadb-db=str      MariaDB database name" << endl <<
     "    --mariadb-port=int    MariaDB server port" << endl <<
     "    --postgres-db=str     PostgreSQL database name" << endl <<
     "    --postgres-port=int   PostgreSQL server port" << endl <<
     "    --postgres-path=str   PostgreSQL installation path (default: /usr/local/pgsql)" << endl <<
+    "    --postgres-host=str   PostgreSQL server host (default: localhost)" << endl <<
+    "    --postgres-user=str   PostgreSQL user" << endl <<
+    "    --postgres-pass=str   PostgreSQL password" << endl <<
     "    --sqlite=file         SQLite database file" << endl <<
     "    --clickhouse-db=str   ClickHouse database name" << endl <<
     "    --clickhouse-port=int ClickHouse server port" << endl <<
@@ -48,6 +54,16 @@ static void print_usage() {
     "    --cockroach-db=str    CockroachDB database name" << endl <<
     "    --cockroach-port=int  CockroachDB server port" << endl <<
     "    --cockroach-host=str  CockroachDB server host" << endl <<
+    "    --gaussdb-m-db=str    GaussDB-M database name" << endl <<
+    "    --gaussdb-m-port=int  GaussDB-M server port" << endl <<
+    "    --gaussdb-m-host=str  GaussDB-M server host" << endl <<
+    "    --gaussdb-m-user=str  GaussDB-M user" << endl <<
+    "    --gaussdb-m-pass=str  GaussDB-M password" << endl <<
+    "    --gaussdb-a-db=str    GaussDB-A database name" << endl <<
+    "    --gaussdb-a-port=int  GaussDB-A server port" << endl <<
+    "    --gaussdb-a-host=str  GaussDB-A server host" << endl <<
+    "    --gaussdb-a-user=str  GaussDB-A user" << endl <<
+    "    --gaussdb-a-pass=str  GaussDB-A password" << endl <<
     endl <<
     "General options:" << endl <<
     "    --seed=int            Random seed (default: random)" << endl <<
@@ -76,15 +92,17 @@ int main(int argc, char *argv[])
     regex optregex("--(\
 help|mode|\
 seed|cpu-affinity|ignore-crash|\
-mysql-db|mysql-port|\
+mysql-db|mysql-port|mysql-host|mysql-user|mysql-pass|\
 mariadb-db|mariadb-port|\
-postgres-db|postgres-port|postgres-path|\
+postgres-db|postgres-port|postgres-path|postgres-host|postgres-user|postgres-pass|\
 sqlite|\
 clickhouse-db|clickhouse-port|\
 tidb-db|tidb-port|\
 oceanbase-db|oceanbase-port|oceanbase-host|\
 yugabyte-db|yugabyte-port|yugabyte-host|\
 cockroach-db|cockroach-port|cockroach-host|\
+gaussdb-m-db|gaussdb-m-port|gaussdb-m-host|gaussdb-m-user|gaussdb-m-pass|\
+gaussdb-a-db|gaussdb-a-port|gaussdb-a-host|gaussdb-a-user|gaussdb-a-pass|\
 output-or-affect-num|\
 reproduce-sql|reproduce-tid|reproduce-usage|reproduce-backup|min|\
 db-test-num|db-table-num)(?:=((?:.|\n)*))?");

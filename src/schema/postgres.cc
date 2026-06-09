@@ -1,8 +1,9 @@
-#include "postgres.hh"
+#include "schema/postgres.hh"
 
 #include <iostream>
 #include <fstream>
 #include <iomanip>
+#include <unistd.h>
 #include <cmath>
 
 #ifndef HAVE_BOOST_REGEX
@@ -185,8 +186,9 @@ bool schema_pqxx::is_consistent_with_basic_type(sqltype *rvalue)
     return false;
 }
 
-schema_pqxx::schema_pqxx(string db, unsigned int port, string path, bool no_catalog)
-    : pgsql_connection(db, port, path)
+schema_pqxx::schema_pqxx(string db, unsigned int port, string path, bool no_catalog,
+                         string host, string user, string pass)
+    : pgsql_connection(db, port, path, host, user, pass)
 {
     ifstream pgerr("pgsqlerr.txt");
     if (pgerr.is_open()) {
@@ -620,46 +622,60 @@ pgsql_connection::pgsql_connection(string db, unsigned int port) {
     test_port = port;
 }
 
-pgsql_connection::pgsql_connection(string db, unsigned int port, string path) : pgsql_connection(db, port)
+pgsql_connection::pgsql_connection(string db, unsigned int port, string path,
+                                   string host, string user, string pass)
+    : pgsql_connection(db, port)
 {
     test_db = db;
     test_port = port;
     inst_path = path;
+    test_host = host;
+    test_user = user;
+    test_pass = pass;
 
-    conn = PQsetdbLogin("localhost", to_string(port).c_str(), NULL, NULL, db.c_str(), NULL, NULL);
+    const char* user_ptr = test_user.empty() ? NULL : test_user.c_str();
+    const char* pass_ptr = test_pass.empty() ? NULL : test_pass.c_str();
+
+    conn = PQsetdbLogin(test_host.c_str(), to_string(port).c_str(), NULL, NULL, db.c_str(), user_ptr, pass_ptr);
     if (PQstatus(conn) == CONNECTION_OK)
         return; // succeed
 
     string err = PQerrorMessage(conn);
-    if (err.find("does not exist") == string::npos) {
+    PQfinish(conn);
+    conn = nullptr;
+
+    // If connecting to the target database failed, try connecting to "postgres"
+    // to determine if the server is reachable. If "postgres" works, the issue
+    // is just that the target database doesn't exist yet — create it.
+    PGconn *pg_conn = PQsetdbLogin(test_host.c_str(), to_string(test_port).c_str(), NULL, NULL, "postgres", user_ptr, pass_ptr);
+    if (PQstatus(pg_conn) != CONNECTION_OK) {
+        // Server is not reachable — real connection failure
+        string pg_err = PQerrorMessage(pg_conn);
+        PQfinish(pg_conn);
         cerr << "[CONNECTION FAIL]  " << err << " in " << debug_info << endl;
         throw runtime_error("[CONNECTION FAIL] " + err + " in " + debug_info);
     }
 
-    cerr << "try to create database testdb" << endl;
-    conn = PQsetdbLogin("localhost", to_string(test_port).c_str(), NULL, NULL, "postgres", NULL, NULL);
-    if (PQstatus(conn) != CONNECTION_OK) {
-        string err = PQerrorMessage(conn);
-        cerr << err << " in " << debug_info << endl;
-        throw runtime_error(err + " in " + debug_info);
-    }
+    // Server is reachable — the target database likely doesn't exist. Create it.
+    cerr << "try to create database " << test_db << endl;
+    conn = pg_conn;
 
     string create_sql = "create database " + test_db + "; ";
     auto res = PQexec(conn, create_sql.c_str());
     auto status = PQresultStatus(res);
     if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK){
-        string err = PQerrorMessage(conn);
+        string cerr_err = PQerrorMessage(conn);
         PQclear(res);
-        throw runtime_error(err + " in " + debug_info);
+        throw runtime_error(cerr_err + " in " + debug_info);
     }
     PQclear(res);
 
     PQfinish(conn);
-    conn = PQsetdbLogin("localhost", to_string(test_port).c_str(), NULL, NULL, test_db.c_str(), NULL, NULL);
+    conn = PQsetdbLogin(test_host.c_str(), to_string(test_port).c_str(), NULL, NULL, test_db.c_str(), user_ptr, pass_ptr);
     if (PQstatus(conn) != CONNECTION_OK) {
-        string err = PQerrorMessage(conn);
-        cerr << err << " in " << debug_info << endl;
-        throw runtime_error(err + " in " + debug_info);
+        string cerr_err = PQerrorMessage(conn);
+        cerr << cerr_err << " in " << debug_info << endl;
+        throw runtime_error(cerr_err + " in " + debug_info);
     }
     cerr << "create successfully" << endl;
     return;
@@ -670,8 +686,9 @@ pgsql_connection::~pgsql_connection()
     PQfinish(conn);
 }
 
-dut_libpq::dut_libpq(string db, unsigned int port, string path)
-    : pgsql_connection(db, port, path)
+dut_libpq::dut_libpq(string db, unsigned int port, string path,
+                     string host, string user, string pass)
+    : pgsql_connection(db, port, path, host, user, pass)
 {
     string set_timeout_cmd = "SET statement_timeout = '" + to_string(POSTGRES_TIMEOUT_SECOND) + "s';";
     test(set_timeout_cmd, NULL, NULL);
@@ -682,6 +699,13 @@ static bool is_expected_error(string error)
     for (const auto& err : pgerrmsg)
         if (error.find(err))
             return true;
+
+    // Crash-related patterns (connection lost = expected, framework handles restart)
+    if (error.find("server closed the connection unexpectedly") != string::npos
+        || error.find("connection to server was lost") != string::npos
+        || error.find("terminating connection due to administrator command") != string::npos
+        || error.find("no connection to the server") != string::npos)
+        return true;
 
     return false;
 }
@@ -719,6 +743,11 @@ void dut_libpq::test(const string &stmt,
         while (res != NULL) {
             res = PQgetResult(conn);
             PQclear(res);
+        }
+
+        // Crash detection: if connection is lost, report as BUG
+        if (PQstatus(conn) == CONNECTION_BAD) {
+            throw runtime_error("BUG!!! [POSTGRES] connection lost: " + err + " in dut_libpq::test");
         }
 
         if (is_expected_error(err))
@@ -761,9 +790,12 @@ void dut_libpq::test(const string &stmt,
 
 void dut_libpq::reset(void)
 {
+    const char* user_ptr = test_user.empty() ? NULL : test_user.c_str();
+    const char* pass_ptr = test_pass.empty() ? NULL : test_pass.c_str();
+
     if (conn)
         PQfinish(conn);
-    conn = PQsetdbLogin("localhost", to_string(test_port).c_str(), NULL, NULL, "postgres", NULL, NULL);
+    conn = PQsetdbLogin(test_host.c_str(), to_string(test_port).c_str(), NULL, NULL, "postgres", user_ptr, pass_ptr);
     if (PQstatus(conn) != CONNECTION_OK) {
         string err = PQerrorMessage(conn);
         cerr << err << " in " << debug_info << endl;
@@ -791,7 +823,7 @@ void dut_libpq::reset(void)
     PQclear(res);
 
     PQfinish(conn);
-    conn = PQsetdbLogin("localhost", to_string(test_port).c_str(), NULL, NULL, test_db.c_str(), NULL, NULL);
+    conn = PQsetdbLogin(test_host.c_str(), to_string(test_port).c_str(), NULL, NULL, test_db.c_str(), user_ptr, pass_ptr);
     if (PQstatus(conn) != CONNECTION_OK) {
         string err = PQerrorMessage(conn);
         cerr << err << " in " << debug_info << endl;
@@ -801,12 +833,13 @@ void dut_libpq::reset(void)
 
 void dut_libpq::backup(void)
 {
-     string pgsql_dump = inst_path + "/bin/pg_dump -p " +
-                        to_string(test_port) + " " + test_db + " > " + POSTGRES_BK_FILE(test_db);
-
-    int ret = system(pgsql_dump.c_str());
+    // Use SQL-based backup: copy db_setup.sql to backup location
+    // This avoids dependency on pg_dump (which may not be available)
+    string bk_file = POSTGRES_BK_FILE(test_db);
+    string cp_cmd = "cp db_setup.sql " + bk_file;
+    int ret = system(cp_cmd.c_str());
     if (ret != 0) {
-        std::cerr << "backup fail \nLocation: " + debug_info << endl;
+        std::cerr << "backup fail: cannot copy db_setup.sql to " << bk_file << endl;
         throw std::runtime_error("backup fail \nLocation: " + debug_info);
     }
 }
@@ -818,19 +851,48 @@ void dut_libpq::reset_to_backup(void)
     if (access(bk_file.c_str(), F_OK ) == -1)
         return;
 
-    PQfinish(conn);
-
-    string pgsql_source = inst_path + "/bin/psql -p "
-                        + to_string(test_port) + " " + test_db + " < "
-                        + POSTGRES_BK_FILE(test_db) + " 1> /dev/null";
-    if (system(pgsql_source.c_str()) == -1)
-        throw std::runtime_error(string("system() error, return -1") + "\nLocation: " + debug_info);
-
-    conn = PQsetdbLogin("localhost", to_string(test_port).c_str(), NULL, NULL, test_db.c_str(), NULL, NULL);
+    // SQL-based restore: read backup file and execute statements via libpq
+    // This avoids dependency on psql (which may not be available)
+    const char* user_ptr = test_user.empty() ? NULL : test_user.c_str();
+    const char* pass_ptr = test_pass.empty() ? NULL : test_pass.c_str();
+    conn = PQsetdbLogin(test_host.c_str(), to_string(test_port).c_str(), NULL, NULL, test_db.c_str(), user_ptr, pass_ptr);
     if (PQstatus(conn) != CONNECTION_OK) {
         string err = PQerrorMessage(conn);
         throw runtime_error("[CONNECTION FAIL] " + err + " in " + debug_info);
     }
+
+    ifstream ifs(bk_file);
+    if (!ifs.is_open()) {
+        cerr << "reset_to_backup: cannot open " << bk_file << endl;
+        return;
+    }
+
+    // Accumulate lines until a semicolon is found (SQL statements can span multiple lines)
+    string accumulated;
+    string line;
+    while (getline(ifs, line)) {
+        // Skip empty lines and comments
+        if (line.empty() || line[0] == '-' || line[0] == '#')
+            continue;
+        accumulated += line + "\n";
+        // Check if the accumulated string ends with semicolon (ignoring trailing whitespace)
+        string trimmed = accumulated;
+        while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\n' || trimmed.back() == '\t'))
+            trimmed.pop_back();
+        if (!trimmed.empty() && trimmed.back() == ';') {
+            auto res = PQexec(conn, accumulated.c_str());
+            if (PQresultStatus(res) != PGRES_COMMAND_OK && PQresultStatus(res) != PGRES_TUPLES_OK) {
+                // Ignore non-fatal errors during restore
+            }
+            PQclear(res);
+            accumulated.clear();
+        }
+    }
+    if (!accumulated.empty()) {
+        auto res = PQexec(conn, accumulated.c_str());
+        PQclear(res);
+    }
+    ifs.close();
 }
 
 int dut_libpq::save_backup_file(string db_name, string path)

@@ -1,3 +1,4 @@
+#include "config.h"
 #ifndef MYSQL_HH
 #define MYSQL_HH
 
@@ -17,12 +18,21 @@ struct mysql_connection {
     MYSQL mysql;
     string test_db;
     unsigned int test_port;
-    mysql_connection(string db, unsigned int port);
+    string test_host;
+    string test_user;
+    string test_pass;
+    mysql_connection(string db, unsigned int port,
+                     string host = "127.0.0.1",
+                     string user = "root",
+                     string pass = "");
     ~mysql_connection();
 };
 
 struct schema_mysql : schema, mysql_connection {
-    schema_mysql(string db, unsigned int port);
+    schema_mysql(string db, unsigned int port,
+                 string host = "127.0.0.1",
+                 string user = "root",
+                 string pass = "");
     virtual void update_schema();
     virtual std::string quote_name(const std::string &id) {
         return id;
@@ -30,15 +40,15 @@ struct schema_mysql : schema, mysql_connection {
 };
 
 struct dut_mysql : dut_base, mysql_connection {
-    virtual void test(const string &stmt, 
-        vector<vector<string>>* output = NULL, 
+    virtual void test(const string &stmt,
+        vector<vector<string>>* output = NULL,
         int* affected_row_num = NULL,
         vector<string>* env_setting_stmts = NULL);
     virtual void reset(void);
 
     virtual void backup(void);
     virtual void reset_to_backup(void);
-    
+
     virtual string commit_stmt();
     virtual string abort_stmt();
     virtual string begin_stmt();
@@ -49,7 +59,10 @@ struct dut_mysql : dut_base, mysql_connection {
 
     static pid_t fork_db_server();
 #endif
-    dut_mysql(string db, unsigned int port);
+    dut_mysql(string db, unsigned int port,
+              string host = "127.0.0.1",
+              string user = "root",
+              string pass = "");
 
     static int save_backup_file(string testdb, string path);
     static int use_backup_file(string backup_file);

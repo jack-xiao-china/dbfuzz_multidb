@@ -8,8 +8,10 @@
 #include "instrumentor.hh"
 #include "dependency_analyzer.hh"
 
+#ifndef _WIN32
 #include <sys/time.h>
 #include <sys/wait.h>
+#endif
 
 using namespace std;
 

@@ -85,12 +85,11 @@ void cross_run(dbms_info &d_info, map<string, string> &options) {
                     break;
                 } catch (exception &e) {
                     string err = e.what();
-                    bool expected = (err.find("expected error") != string::npos)
-                                 || (err.find("timeout") != string::npos);
-                    if (!expected) {
-                        cerr << "unexpected error in generate_database: " << err << endl;
+                    if (err.find("BUG") != string::npos || err.find("CONNECTION FAIL") != string::npos) {
+                        cerr << "fatal error in generate_database: " << err << endl;
                         abort();
                     }
+                    cerr << "generate_database error (will retry): " << err << endl;
                     rand_seed = rd();
                     cerr << "retrying with seed: " << rand_seed << endl;
                     smith::rng.seed(rand_seed);
@@ -109,16 +108,21 @@ void cross_run(dbms_info &d_info, map<string, string> &options) {
 
                 try {
                     cross_tester ct(d_info, db_schema);
-                    if (ct.cross_test()) {
+
+                    // Pre-create bug directory for saving artifacts
+                    string bug_dir = "found_bugs/cross_bug_r" + to_string(round)
+                                     + "_t" + to_string(i) + "/";
+
+                    if (ct.cross_test(bug_dir)) {
                         cerr << RED << "CROSS BUG FOUND in round " << round
                              << ", test " << i << RESET << endl;
 
-                        // Save the bug-triggering database state
-                        string bug_dir = "found_bugs/cross_bug_r" + to_string(round)
-                                         + "_t" + to_string(i) + "/";
-                        if (make_dir_error_exit(bug_dir) == 0) {
-                            save_backup_file(bug_dir, d_info);
-                        }
+                        // Ensure bug directory exists
+                        make_dir_error_exit(bug_dir);
+
+                        // Minimize the test case
+                        ct.minimize(bug_dir);
+
                         exit(EXIT_FAILURE); // signal bug to parent
                     }
                 } catch (exception &e) {

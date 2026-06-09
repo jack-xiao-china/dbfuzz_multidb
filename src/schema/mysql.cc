@@ -1,7 +1,8 @@
+#include "config.h"
 #include <stdexcept>
 #include <cassert>
 #include <cstring>
-#include "mysql.hh"
+#include "schema/mysql.hh"
 #include <iostream>
 #include <set>
 #include <iomanip>
@@ -52,6 +53,10 @@ static regex e_incorrect_string("Incorrect string value: [\\s\\S]*");
 static regex e_long_specified_key("Specified key was too long; max key length is [\\s\\S]* bytes");
 static regex e_out_of_range_2("Out of range value for column [\\s\\S]*");
 static regex e_table_not_exists("Table [\\s\\S]* doesn't exist");
+static regex e_ref_table_not_exists("Failed to open the referenced table [\\s\\S]*");
+static regex e_subquery_transform("Statement requires a transform of a subquery[\\s\\S]*");
+static regex e_fk_constraint_fail("Cannot add or update a child row: a foreign key constraint fails[\\s\\S]*");
+static regex e_fk_missing_key("Failed to add the foreign key constraint[\\s\\S]*");
 
 
 extern "C"  {
@@ -95,25 +100,30 @@ static string process_an_item(string& item)
     return final_str;
 }
 
-mysql_connection::mysql_connection(string db, unsigned int port)
+mysql_connection::mysql_connection(string db, unsigned int port,
+                                   string host, string user, string pass)
 {
     test_db = db;
     test_port = port;
-    
+    test_host = host;
+    test_user = user;
+    test_pass = pass;
+
+    const char* pass_ptr = test_pass.empty() ? NULL : test_pass.c_str();
+
     if (!mysql_init(&mysql))
         throw std::runtime_error(string(mysql_error(&mysql)) + "\nLocation: " + debug_info);
 
-    // password null: blank (empty) password field
-    if (mysql_real_connect(&mysql, "127.0.0.1", "root", NULL, test_db.c_str(), test_port, NULL, 0)) 
+    if (mysql_real_connect(&mysql, test_host.c_str(), test_user.c_str(), pass_ptr, test_db.c_str(), test_port, NULL, 0))
         return; // success
-    
+
     string err = mysql_error(&mysql);
     if (!regex_match(err, e_unknown_database))
         throw std::runtime_error("BUG!!!" + string(mysql_error(&mysql)) + "\nLocation: " + debug_info);
 
     // error caused by unknown database, so create one
     cerr << test_db + " does not exist, use default db" << endl;
-    if (!mysql_real_connect(&mysql, "127.0.0.1", "root", NULL, NULL, port, NULL, 0))
+    if (!mysql_real_connect(&mysql, test_host.c_str(), test_user.c_str(), pass_ptr, NULL, port, NULL, 0))
         throw std::runtime_error(string(mysql_error(&mysql)) + "\nLocation: " + debug_info);
     
     cerr << "create database " + test_db << endl;
@@ -150,8 +160,9 @@ mysql_connection::~mysql_connection()
     mysql_close(&mysql);
 }
 
-schema_mysql::schema_mysql(string db, unsigned int port)
-  : mysql_connection(db, port)
+schema_mysql::schema_mysql(string db, unsigned int port,
+                           string host, string user, string pass)
+  : mysql_connection(db, port, host, user, pass)
 {
     // Loading tables...;
     string get_table_query = "SELECT DISTINCT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES \
@@ -452,6 +463,25 @@ schema_mysql::schema_mysql(string db, unsigned int port)
     true_literal = "true";
     false_literal = "false";
 
+    // MySQL 8.x optimizer_switch options for EET env_setting_stmts
+    // set_stmt::out() generates: SET SESSION optimizer_switch = 'flag=on/off'
+    vector<string> optimizer_flags = {
+        "batch_key_access", "block_nested_loop", "condition_fanout_filter",
+        "derived_merge", "duplicateweedout", "firstmatch",
+        "index_condition_pushdown", "index_merge",
+        "index_merge_intersection", "index_merge_union",
+        "index_merge_sort_union", "loosescan", "materialization",
+        "mrr", "mrr_cost_based", "semijoin",
+        "subquery_materialization_cost_based",
+        "use_index_extensions"
+    };
+    for (auto& flag : optimizer_flags) {
+        supported_setting["SESSION optimizer_switch"]
+            .push_back("'" + flag + "=on'");
+        supported_setting["SESSION optimizer_switch"]
+            .push_back("'" + flag + "=off'");
+    }
+
     generate_indexes();
 }
 
@@ -517,8 +547,9 @@ void schema_mysql::update_schema()
     return;
 }
 
-dut_mysql::dut_mysql(string db, unsigned int port)
-  : mysql_connection(db, port)
+dut_mysql::dut_mysql(string db, unsigned int port,
+                     string host, string user, string pass)
+  : mysql_connection(db, port, host, user, pass)
 {
     sent_sql = "";
     has_sent_sql = false;
@@ -612,6 +643,10 @@ void dut_mysql::block_test(const string &stmt,
             || regex_match(err, e_long_specified_key)
             || regex_match(err, e_out_of_range_2)
             || regex_match(err, e_table_not_exists)
+            || regex_match(err, e_ref_table_not_exists)
+            || regex_match(err, e_subquery_transform)
+            || regex_match(err, e_fk_constraint_fail)
+            || regex_match(err, e_fk_missing_key)
            ) {
             throw runtime_error(prefix + err);
         }
@@ -683,6 +718,15 @@ void dut_mysql::test(const string &stmt,
     if (has_sent_sql == false) {
         auto clear_results = mysql_store_result(&mysql);
         mysql_free_result(clear_results);
+
+        // Execute env_setting_stmts synchronously before the main query
+        if (env_setting_stmts) {
+            for (auto& s : *env_setting_stmts) {
+                if (mysql_real_query(&mysql, s.c_str(), s.size())) {
+                    cerr << "env_setting_stmt failed: " << mysql_error(&mysql) << endl;
+                }
+            }
+        }
 
         status = mysql_real_query_nonblocking(&mysql, stmt.c_str(), stmt.size());
         sent_sql = stmt;
@@ -832,6 +876,10 @@ void dut_mysql::test(const string &stmt,
             || regex_match(err, e_long_specified_key)
             || regex_match(err, e_out_of_range_2)
             || regex_match(err, e_table_not_exists)
+            || regex_match(err, e_ref_table_not_exists)
+            || regex_match(err, e_subquery_transform)
+            || regex_match(err, e_fk_constraint_fail)
+            || regex_match(err, e_fk_missing_key)
            ) {
             throw runtime_error(prefix + err);
         }
@@ -909,11 +957,12 @@ void dut_mysql::reset(void)
 void dut_mysql::backup(void)
 {
     auto backup_name = "/tmp/" + test_db + "_bk.sql";
-    string mysql_dump = "/usr/local/mysql/bin/mysqldump -h 127.0.0.1 -P " + to_string(test_port) + " -u root " + test_db + " > " + backup_name;
+    string pass_opt = test_pass.empty() ? "" : " -p" + test_pass;
+    string mysql_dump = "mysqldump -h " + test_host + " -P " + to_string(test_port) + " -u " + test_user + pass_opt + " " + test_db + " > " + backup_name;
     int ret = system(mysql_dump.c_str());
     if (ret != 0) {
-        cerr << "backup fail in dut_tidb::backup!!" << endl;
-        throw std::runtime_error("backup fail in dut_tidb::backup"); 
+        cerr << "backup fail in dut_mysql::backup!!" << endl;
+        throw std::runtime_error("backup fail in dut_mysql::backup"); 
     }
 }
 
@@ -925,12 +974,14 @@ void dut_mysql::reset_to_backup(void)
         return;
     
     mysql_close(&mysql);
-    
-    string mysql_source = "/usr/local/mysql/bin/mysql -h 127.0.0.1 -P " + to_string(test_port) + " -u root -D " + test_db + " < " + bk_file;
-    if (system(mysql_source.c_str()) == -1) 
+
+    string pass_opt = test_pass.empty() ? "" : " -p" + test_pass;
+    string mysql_source = "mysql -h " + test_host + " -P " + to_string(test_port) + " -u " + test_user + pass_opt + " -D " + test_db + " < " + bk_file;
+    if (system(mysql_source.c_str()) == -1)
         throw std::runtime_error(string("system() error, return -1") + " in dut_mysql::reset_to_backup!");
 
-    if (!mysql_real_connect(&mysql, "127.0.0.1", "root", NULL, test_db.c_str(), test_port, NULL, 0)) 
+    const char* pass_ptr = test_pass.empty() ? NULL : test_pass.c_str();
+    if (!mysql_real_connect(&mysql, test_host.c_str(), test_user.c_str(), pass_ptr, test_db.c_str(), test_port, NULL, 0))
         throw std::runtime_error(string(mysql_error(&mysql)) + " in dut_mysql::reset_to_backup!");
 }
 

@@ -4,7 +4,6 @@
 
 #include "txcheck/tx_main.hh"
 #include "txcheck/transaction_test.hh"
-#include "core/general_process.hh"
 #include "txcheck/tx_general_process.hh"
 
 #include <iostream>
@@ -30,8 +29,10 @@ using boost::regex_match;
 #include "core/impedance.hh"
 #include "schema/dut.hh"
 
+#ifndef _WIN32
 #include <sys/time.h>
 #include <sys/wait.h>
+#endif
 
 #ifdef __linux__
 #include <sched.h>
@@ -98,7 +99,7 @@ static int fork_for_generating_database(dbms_info &d_info)
     write_op_id = 0;
     child_pid = fork();
     if (child_pid == 0) { // in child process
-        generate_database(d_info);
+        generate_database(d_info, 0);
         ofstream output_wkey("wkey.txt");
         output_wkey << write_op_id << endl;
         output_wkey.close();
@@ -242,7 +243,7 @@ static int random_test(dbms_info &d_info)
         try {
             // don't fork, so that the static schema can be used in each test case
             transaction_test::fork_if_server_closed(d_info);
-            generate_database(d_info);
+            generate_database(d_info, 0);
             break;
         } catch (std::exception &e) {
             cerr << e.what() << " in setup stage" << endl;

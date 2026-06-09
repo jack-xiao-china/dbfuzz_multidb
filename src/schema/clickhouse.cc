@@ -1,4 +1,5 @@
-#include "clickhouse.hh"
+#include "config.h"
+#include "schema/clickhouse.hh"
 #include <unistd.h>
 #ifndef HAVE_BOOST_REGEX
 #include <regex>
@@ -632,6 +633,17 @@ void dut_clickhouse::test(const string &stmt,
             ) {
             throw runtime_error("clickhouse test expected error [" + error + "]");
         }
+
+        // Crash detection: connection-level failures
+        if (error.find("Connection refused") != string::npos
+            || error.find("Broken pipe") != string::npos
+            || error.find("Connection reset by peer") != string::npos
+            || error.find("Attempt to read after eof") != string::npos
+            || error.find("(NETWORK_ERROR)") != string::npos
+            || error.find("UNKNOWN_EXCEPTION") != string::npos) {
+            throw runtime_error("BUG!!! " + error + " in clickhouse::test");
+        }
+
         throw runtime_error("clickhouse test fails [" + error + "]");
     }
 

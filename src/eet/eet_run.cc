@@ -223,11 +223,13 @@ void eet_run(dbms_info &d_info, map<string, string> &options) {
                     break;
                 } catch (exception &e) { // if fails, just try again
                     string err = e.what();
-                    bool expected = (err.find("expected error") != string::npos) || (err.find("timeout") != string::npos);
-                    if (!expected) {
-                        cerr << "unexpected error generated from generate_database: " << err << endl;
-                        abort(); // stop if trigger unexpected error
+                    // Genuine bugs (server crash, connection loss) should abort
+                    if (err.find("BUG") != string::npos || err.find("CONNECTION FAIL") != string::npos) {
+                        cerr << "fatal error from generate_database: " << err << endl;
+                        abort();
                     }
+                    // Other errors (bad SQL, backup failures) are retried
+                    cerr << "generate_database error (will retry): " << err << endl;
                     rand_seed = rd();
                     cerr << "random seed: " << rand_seed << " ... " << endl;
                     smith::rng.seed(rand_seed);

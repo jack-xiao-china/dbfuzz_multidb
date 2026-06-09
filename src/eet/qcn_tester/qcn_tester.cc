@@ -1,4 +1,4 @@
-#include "qcn_tester.hh"
+#include "eet/qcn_tester/qcn_tester.hh"
 #include <chrono>
 #include <thread>
 
@@ -57,15 +57,15 @@ void qcn_tester::execute_get_changed_results(string query, string table_name,
         dbms_execution_ms = dbms_execution_ms + (get_cur_time_ms() - execute_start);
 
         string err = e.what();
-        bool expected = err.find("expected error") != string::npos;
-        if (!expected && ignore_crash == false) {
+        bool is_bug = (err.find("BUG") != string::npos) || (err.find("CONNECTION FAIL") != string::npos);
+        if (is_bug && ignore_crash == false) {
             save_query(".", "unexpected.sql", query);
             save_backup_file(".", tested_dbms_info);
             save_queries(".", "env_stmts.sql", env_setting_stmts);
-            cerr << "unexpected error: " << err << endl;
-            abort(); // stop if trigger unexpected error
-        } else if (!expected) {
-            cerr << "unexpected error: " << err << endl;
+            cerr << "fatal error in execute_query_with_update: " << err << endl;
+            abort();
+        } else if (is_bug) {
+            cerr << "fatal error: " << err << endl;
             cerr << "option [ignore-crash] enabled, so sleep 1 min (wait for recovering the server) and skip this bug" << endl;
             chrono::minutes duration(1);
             this_thread::sleep_for(duration);
@@ -105,17 +105,17 @@ void qcn_tester::execute_query(string query, multiset<row_output>& result)
         
     } catch(exception& e) {
         dbms_execution_ms = dbms_execution_ms + (get_cur_time_ms() - execute_start);
-        
+
         string err = e.what();
-        bool expected = (err.find("expected error") != string::npos);
-        if (!expected && ignore_crash == false) {
+        bool is_bug = (err.find("BUG") != string::npos) || (err.find("CONNECTION FAIL") != string::npos);
+        if (is_bug && ignore_crash == false) {
             save_query(".", "unexpected.sql", query);
             save_backup_file(".", tested_dbms_info);
             save_queries(".", "env_stmts.sql", env_setting_stmts);
-            cerr << "unexpected error: " << err << endl;
-            abort(); // stop if trigger unexpected error
-        } else if (!expected) {
-            cerr << "unexpected error: " << err << endl;
+            cerr << "fatal error in execute_query: " << err << endl;
+            abort();
+        } else if (is_bug) {
+            cerr << "fatal error: " << err << endl;
             cerr << "option [ignore-crash] enabled, so sleep 1 min (wait for recovering the server) and skip this bug" << endl;
             chrono::minutes duration(1);
             this_thread::sleep_for(duration);

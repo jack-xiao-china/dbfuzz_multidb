@@ -1,7 +1,7 @@
 #ifndef QCN_UPDATE_TESTER_HH
 #define QCN_UPDATE_TESTER_HH
 
-#include "qcn_tester.hh"
+#include "eet/qcn_tester/qcn_tester.hh"
 
 struct qcn_update_tester : qcn_tester {
     bool skip_one_original_execution;

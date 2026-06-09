@@ -1,4 +1,4 @@
-#include "qcn_delete_tester.hh"
+#include "eet/qcn_tester/qcn_delete_tester.hh"
 
 qcn_delete_tester::qcn_delete_tester(dbms_info& info, shared_ptr<schema> schema) 
 : qcn_tester(info, schema){

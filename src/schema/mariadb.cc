@@ -1,7 +1,7 @@
 #include <stdexcept>
 #include <cassert>
 #include <cstring>
-#include "mariadb.hh"
+#include "schema/mariadb.hh"
 #include <iostream>
 #include <set>
 

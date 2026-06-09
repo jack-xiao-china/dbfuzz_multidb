@@ -1,4 +1,4 @@
-#include "instrumentor.hh"
+#include "txcheck/instrumentor.hh"
 
 string print_stmt_to_string(shared_ptr<prod> stmt);
 

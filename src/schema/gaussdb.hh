@@ -1,8 +1,4 @@
-/// @file
-/// @brief schema and dut classes for PostgreSQL
-
-#ifndef POSTGRES_HH
-#define POSTGRES_HH
+#pragma once
 
 #include "schema/dut.hh"
 #include "core/relmodel.hh"
@@ -17,18 +13,16 @@ extern "C" {
 #include <sys/time.h>
 #include <fcntl.h>
 
-#define POSTGRES_STMT_BLOCK_MS 200
-
 #define OID long
 
-struct pg_type : sqltype {
+struct gaussdb_type : sqltype {
     OID oid_;
     char typdelim_;
     OID typrelid_;
     OID typelem_;
     OID typarray_;
     char typtype_;
-    pg_type(string name,
+    gaussdb_type(string name,
         OID oid,
         char typdelim,
         OID typrelid,
@@ -37,39 +31,34 @@ struct pg_type : sqltype {
         char typtype)
         : sqltype(name), oid_(oid), typdelim_(typdelim), typrelid_(typrelid),
           typelem_(typelem), typarray_(typarray), typtype_(typtype) { }
-    virtual ~pg_type() {}
+    virtual ~gaussdb_type() {}
     virtual bool consistent(struct sqltype *rvalue);
-    // bool consistent_(sqltype *rvalue);
 };
 
-struct pgsql_connection {
+struct gaussdb_connection {
     PGconn *conn = 0;
     string test_db;
     unsigned int test_port;
-    string inst_path;
-    string test_host;
-    string test_user;
-    string test_pass;
-    pgsql_connection(string db, unsigned int port);
-    pgsql_connection(string db, unsigned int port, string path,
-                     string host = "localhost", string user = "", string pass = "");
-    ~pgsql_connection();
+    string host_addr;
+    string dbms_user;
+    string dbms_pass;
+    gaussdb_connection(string db, unsigned int port, string host, string user, string pass);
+    ~gaussdb_connection();
 };
 
-struct schema_pqxx : schema, pgsql_connection {
-    map<OID, pg_type*> oid2type;
-    map<string, pg_type*> name2type;
+struct schema_gaussdb : schema, gaussdb_connection {
+    map<OID, gaussdb_type*> oid2type;
+    map<string, gaussdb_type*> name2type;
 
     virtual string quote_name(const string &id) {
         return id;
     }
     bool is_consistent_with_basic_type(sqltype *rvalue);
-    schema_pqxx(string db, unsigned int port, string path, bool no_catalog,
-                string host = "localhost", string user = "", string pass = "");
-    ~schema_pqxx();
+    schema_gaussdb(string db, unsigned int port, string host, string user, string pass, bool no_catalog);
+    ~schema_gaussdb();
 };
 
-struct dut_libpq : dut_base, pgsql_connection {
+struct dut_gaussdb : dut_base, gaussdb_connection {
     virtual void test(const string &stmt,
                     vector<vector<string>>* output = NULL,
                     int* affected_row_num = NULL,
@@ -82,8 +71,5 @@ struct dut_libpq : dut_base, pgsql_connection {
     virtual void get_content(vector<string>& tables_name, map<string, vector<vector<string>>>& content);
 
     static int save_backup_file(string db_name, string path);
-    dut_libpq(string db, unsigned int port, string path,
-              string host = "localhost", string user = "", string pass = "");
+    dut_gaussdb(string db, unsigned int port, string host, string user, string pass);
 };
-
-#endif

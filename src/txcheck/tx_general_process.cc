@@ -1,115 +1,127 @@
-#include "core/general_process.hh"
+#include "config.h"
+#include "txcheck/tx_general_process.hh"
 
 extern int write_op_id;
 
-int make_dir_error_exit(string& folder)
+// ============================================================
+// TxCheck-specific overloaded functions (different signatures from core)
+// ============================================================
+
+void interect_test(dbms_info& d_info,
+                    shared_ptr<prod> (* tmp_statement_factory)(scope *),
+                    vector<string>& rec_vec,
+                    bool need_affect)
 {
-    cerr << "try to mkdir " << folder << endl;
-    int fail_time = 0;
-    while (mkdir(folder.c_str(), 0700)) {
-        cout << "fail to mkdir "<< folder << endl;
-        if (folder.length() < 2)
-            return 1;
-        folder = folder.substr(0, folder.length() - 1) + "_tmp/";
-        fail_time++;
-        if (fail_time > 5)
-            return 1;
+    auto schema = get_schema(d_info);
+    scope scope;
+    schema->fill_scope(scope);
+
+    shared_ptr<prod> gen = tmp_statement_factory(&scope);
+    ostringstream s;
+    gen->out(s);
+
+    static int try_time = 0;
+    try {
+        auto dut = dut_setup(d_info);
+        auto sql = s.str() + ";";
+        int affect_num = 0;
+        dut->test(sql, NULL, &affect_num);
+
+        if (need_affect && affect_num <= 0)
+            throw runtime_error(string("affect result empty"));
+
+        rec_vec.push_back(sql);
+
+    } catch(std::exception &e) { // ignore runtime error
+        string err = e.what();
+        cerr << "err: " << e.what() << endl;
+        if (err.find("syntax") != string::npos) {
+            cerr << "\n" << e.what() << "\n" << endl;
+            cerr << s.str() << endl;
+        }
+        if (try_time >= 128) {
+            cerr << "Fail in interect_test() " << try_time << " times, return" << endl;
+            throw e;
+        }
+        try_time++;
+        interect_test(d_info, tmp_statement_factory, rec_vec, need_affect);
+        try_time--;
     }
-    cerr << "finally mkdir " << folder << endl;
+}
+
+void normal_test(dbms_info& d_info,
+                    shared_ptr<schema>& schema,
+                    shared_ptr<prod> (* tmp_statement_factory)(scope *),
+                    vector<string>& rec_vec,
+                    bool need_affect)
+{
+    scope scope;
+    schema->fill_scope(scope);
+
+    shared_ptr<prod> gen = tmp_statement_factory(&scope);
+    ostringstream s;
+    gen->out(s);
+
+    static int try_time = 0;
+    try {
+        auto dut = dut_setup(d_info);
+        auto sql = s.str() + ";";
+        int affect_num = 0;
+        dut->test(sql, NULL, &affect_num);
+
+        if (need_affect && affect_num <= 0)
+            throw runtime_error(string("affect result empty"));
+        rec_vec.push_back(sql);
+    } catch(std::exception &e) { // ignore runtime error
+        string err = e.what();
+        if (err.find("syntax") != string::npos) {
+            cerr << "trigger a syntax problem: " << err << endl;
+            cerr << "sql: " << s.str();
+        }
+
+        if (err.find("timeout") != string::npos)
+            cerr << "time out in normal test: " << err << endl;
+
+        if (err.find("BUG") != string::npos) {
+            cerr << "BUG is triggered in normal_test: " << err << endl;
+            throw e;
+        }
+
+        if (try_time >= 128) {
+            cerr << "Fail in normal_test() " << try_time << " times, return" << endl;
+            throw e;
+        }
+        try_time++;
+        normal_test(d_info, schema, tmp_statement_factory, rec_vec, need_affect);
+        try_time--;
+    }
+}
+
+int generate_database(dbms_info& d_info)
+{
+    vector<string> stage_1_rec;
+    vector<string> stage_2_rec;
+
+    cerr << "generating database ... ";
+    dut_reset(d_info);
+
+    auto ddl_stmt_num = d6() + 1; // at least 2 statements to create 2 tables
+    for (auto i = 0; i < ddl_stmt_num; i++)
+        interect_test(d_info, &ddl_statement_factory, stage_1_rec, false);
+
+    auto basic_dml_stmt_num = 10 + d6(); // 11-20 statements to insert data
+    auto schema = get_schema(d_info); // schema will not change in this stage
+    for (auto i = 0; i < basic_dml_stmt_num; i++)
+        normal_test(d_info, schema, &basic_dml_statement_factory, stage_2_rec, true);
+
+    dut_backup(d_info);
+    cerr << "done" << endl;
     return 0;
 }
 
-shared_ptr<schema> get_schema(dbms_info& d_info)
-{
-    shared_ptr<schema> schema;
-    static int try_time = 0;
-
-    try {
-        if (false) {}
-        
-        #ifdef HAVE_MYSQL
-        else if (d_info.dbms_name == "mysql") 
-            schema = make_shared<schema_mysql>(d_info.test_db, d_info.test_port);
-        #endif
-
-        #ifdef HAVE_MARIADB
-        else if (d_info.dbms_name == "mariadb") 
-            schema = make_shared<schema_mariadb>(d_info.test_db, d_info.test_port);
-        #endif
-
-        #ifdef HAVE_TIDB
-        else if (d_info.dbms_name == "tidb") 
-            schema = make_shared<schema_tidb>(d_info.test_db, d_info.test_port);
-        #endif
-
-        else {
-            cerr << d_info.dbms_name << " is not supported yet" << endl;
-            throw runtime_error("Unsupported DBMS");
-        }
-    } catch (exception &e) { // may occur occastional error
-        cerr << "exception: " << e.what() << endl;
-        if (try_time >= 128) {
-            cerr << "Fail in get_schema() " << try_time << " times, return" << endl;
-	        throw e;
-        }
-        try_time++;
-        schema = get_schema(d_info);
-        try_time--;
-        return schema;
-    }
-    return schema;
-}
-
-shared_ptr<dut_base> dut_setup(dbms_info& d_info)
-{
-    shared_ptr<dut_base> dut;
-    if (false) {}
-    #ifdef HAVE_MYSQL
-    else if (d_info.dbms_name == "mysql")
-        dut = make_shared<dut_mysql>(d_info.test_db, d_info.test_port);
-    #endif
-
-    #ifdef HAVE_MARIADB
-    else if (d_info.dbms_name == "mariadb")
-        dut = make_shared<dut_mariadb>(d_info.test_db, d_info.test_port);
-    #endif
-
-    #ifdef HAVE_TIDB
-    else if (d_info.dbms_name == "tidb")
-        dut = make_shared<dut_tidb>(d_info.test_db, d_info.test_port);
-    #endif
-
-    else {
-        cerr << d_info.dbms_name << " is not installed, or it is not supported yet" << endl;
-        throw runtime_error("Unsupported DBMS");
-    }
-
-    return dut;
-}
-
-int save_backup_file(string path, dbms_info& d_info)
-{
-    if (false) {}
-    #ifdef HAVE_MYSQL
-    else if (d_info.dbms_name == "mysql")
-        return dut_mysql::save_backup_file(path);
-    #endif
-
-    #ifdef HAVE_MARIADB
-    else if (d_info.dbms_name == "mariadb")
-        return dut_mariadb::save_backup_file(path);
-    #endif
-
-    #ifdef HAVE_TIDB
-    else if (d_info.dbms_name == "tidb")
-        return dut_tidb::save_backup_file(path);
-    #endif
-
-    else {
-        cerr << d_info.dbms_name << " is not supported yet" << endl;
-        throw runtime_error("Unsupported DBMS");
-    }
-}
+// ============================================================
+// TxCheck-specific unique functions
+// ============================================================
 
 int use_backup_file(string backup_file, dbms_info& d_info)
 {
@@ -132,452 +144,6 @@ int use_backup_file(string backup_file, dbms_info& d_info)
     else {
         cerr << d_info.dbms_name << " is not supported yet" << endl;
         throw runtime_error("Unsupported DBMS");
-    }
-}
-
-
-pid_t fork_db_server(dbms_info& d_info)
-{
-    pid_t fork_pid;
-    if (false) {}
-    
-    #ifdef HAVE_MYSQL
-    else if (d_info.dbms_name == "mysql")
-        fork_pid = dut_mysql::fork_db_server();
-    #endif
-
-    #ifdef HAVE_MARIADB
-    else if (d_info.dbms_name == "mariadb")
-        fork_pid = dut_mariadb::fork_db_server();
-    #endif
-    
-    #ifdef HAVE_OCEANBASE
-    else if (d_info.dbms_name == "oceanbase")
-        fork_pid = dut_oceanbase::fork_db_server();
-    #endif
-    
-    #ifdef HAVE_TIDB
-    else if (d_info.dbms_name == "tidb")
-        fork_pid = dut_tidb::fork_db_server();
-    #endif
-
-    #ifdef HAVE_MONETDB
-    else if (d_info.dbms_name == "monetdb")
-        fork_pid = dut_monetdb::fork_db_server();
-    #endif
-
-    else {
-        cerr << d_info.dbms_name << " is not supported yet" << endl;
-        throw runtime_error("Unsupported DBMS");
-    }
-
-    return fork_pid;
-}
-
-void user_signal(int signal)  
-{  
-    if(signal != SIGUSR1) {  
-        printf("unexpect signal %d\n", signal);  
-        exit(1);  
-    }  
-     
-    cerr << "get SIGUSR1, stop the thread" << endl;
-    pthread_exit(0);
-}
-
-void dut_reset(dbms_info& d_info)
-{
-    auto dut = dut_setup(d_info);
-    dut->reset();
-}
-
-void dut_backup(dbms_info& d_info)
-{
-    auto dut = dut_setup(d_info);
-    dut->backup();
-}
-
-void dut_reset_to_backup(dbms_info& d_info)
-{
-    auto dut = dut_setup(d_info);
-    dut->reset_to_backup();
-}
-
-void dut_get_content(dbms_info& d_info, 
-                    map<string, vector<vector<string>>>& content)
-{
-    vector<string> table_names;
-    auto schema = get_schema(d_info);
-    for (auto& table:schema->tables)
-        table_names.push_back(table.ident());
-    
-    auto dut = dut_setup(d_info);
-    dut->get_content(table_names, content);
-}
-
-void interect_test(dbms_info& d_info, 
-                    shared_ptr<prod> (* tmp_statement_factory)(scope *), 
-                    vector<string>& rec_vec,
-                    bool need_affect)
-{
-    auto schema = get_schema(d_info);
-    scope scope;
-    schema->fill_scope(scope);
-    
-    shared_ptr<prod> gen = tmp_statement_factory(&scope);
-    ostringstream s;
-    gen->out(s);
-
-    static int try_time = 0;
-    try {
-        auto dut = dut_setup(d_info);
-        auto sql = s.str() + ";";
-        int affect_num = 0;
-        dut->test(sql, NULL, &affect_num);
-        
-        if (need_affect && affect_num <= 0)
-            throw runtime_error(string("affect result empty"));
-        
-        rec_vec.push_back(sql);
-
-    } catch(std::exception &e) { // ignore runtime error
-        string err = e.what();
-        cerr << "err: " << e.what() << endl;
-        if (err.find("syntax") != string::npos) {
-            cerr << "\n" << e.what() << "\n" << endl;
-            cerr << s.str() << endl;
-        }
-        if (try_time >= 128) {
-            cerr << "Fail in interect_test() " << try_time << " times, return" << endl;
-            throw e;
-        }
-        try_time++;
-        interect_test(d_info, tmp_statement_factory, rec_vec, need_affect);
-        try_time--;
-    }
-}
-
-void normal_test(dbms_info& d_info, 
-                    shared_ptr<schema>& schema, 
-                    shared_ptr<prod> (* tmp_statement_factory)(scope *), 
-                    vector<string>& rec_vec,
-                    bool need_affect)
-{
-    scope scope;
-    schema->fill_scope(scope);
-
-    shared_ptr<prod> gen = tmp_statement_factory(&scope);
-    ostringstream s;
-    gen->out(s);
-
-    static int try_time = 0;
-    try {
-        auto dut = dut_setup(d_info);
-        auto sql = s.str() + ";";
-        int affect_num = 0;
-        dut->test(sql, NULL, &affect_num);
-        
-        if (need_affect && affect_num <= 0)
-            throw runtime_error(string("affect result empty"));
-        // cerr << sql.substr(0, sql.size() > 10 ? 10 : sql.size()) << " affect: " << affect_num << endl;
-        rec_vec.push_back(sql);
-    } catch(std::exception &e) { // ignore runtime error
-        string err = e.what();
-        if (err.find("syntax") != string::npos) {
-            cerr << "trigger a syntax problem: " << err << endl;
-            cerr << "sql: " << s.str();
-        }
-
-        if (err.find("timeout") != string::npos)
-            cerr << "time out in normal test: " << err << endl;
-
-        if (err.find("BUG") != string::npos) {
-            cerr << "BUG is triggered in normal_test: " << err << endl;
-            throw e;
-        }
-        
-        if (try_time >= 128) {
-            cerr << "Fail in normal_test() " << try_time << " times, return" << endl;
-            throw e;
-        }
-        try_time++;
-        normal_test(d_info, schema, tmp_statement_factory, rec_vec, need_affect);
-        try_time--;
-    }
-}
-
-static size_t BKDRHash(const char *str, size_t hash)  
-{
-    while (size_t ch = (size_t)*str++)  {         
-        hash = hash * 131 + ch;   // 也可以乘以31、131、1313、13131、131313..  
-    }  
-    return hash;  
-}
-
-static void hash_output_to_set(vector<vector<string>> &output, vector<size_t>& hash_set)
-{
-    size_t hash = 0;
-    auto row_size = output.size();
-    for (int i = 0; i < row_size; i++) {
-        auto column_size = output[i].size();
-        for (int j = 0; j < column_size; j++)
-            hash = BKDRHash(output[i][j].c_str(), hash);
-        hash_set.push_back(hash);
-        hash = 0;
-    }
-
-    // sort the set, because some output order is random
-    sort(hash_set.begin(), hash_set.end());
-    return;
-}
-
-static void output_diff(string item_name, vector<vector<string>>& a_result, vector<vector<string>>& b_result)
-{
-    ofstream ofile("/tmp/comp_diff.txt", ios::app);
-    ofile << "============================" << endl;
-    ofile << "item name: " << item_name << endl;
-    ofile << "A result: " << endl;
-    for (auto& row_str : a_result) {
-        for (auto& str : row_str)
-            ofile << "    " << str;
-    }
-    ofile << endl;
-    ofile << "B result: " << endl;
-    for (auto& row_str : b_result) {
-        for (auto& str : row_str)
-            ofile << "    " << str;
-    }
-    ofile.close();
-}
-
-static bool is_number(const string &s) {
-    if (s.empty() || s.length() <= 0) 
-        return false;
-
-    int point = 0;
-    if (s.length() == 1 && (s[0] >'9' || s[0] < '0')) 
-        return false;
-
-    if(s.length() > 1) {
-        if (s[0]!='.' && (s[0] >'9' || s[0] < '0')&&s[0]!='-' && s[0]!='+') 
-            return false;
-        
-        if (s[0] == '.') 
-            ++point;
-
-        if ((s[0] == '+' || s[0] == '-') && (s[1] >'9' || s[1] < '0')) 
-            return false;
-
-        for (size_t i = 1; i < s.length(); ++i) {
-            if (s[i]!='.' && (s[i] >'9' || s[i] < '0')) 
-                return false;
-
-            if (s[i] == '.') 
-                ++point;
-        }
-    }
-
-    if (point > 1) return false;
-    
-    return true;
-}
-
-static bool nomoalize_content(vector<vector<string>> &content)
-{
-    auto size = content.size();
-
-    for (int i = 0; i < size; i++) {
-        auto column_num = content[i].size();
-        for (int j = 0; j < column_num; j++) {
-            auto str = content[i][j];
-            double value = 0;
-            
-            if (!is_number(str) || str.find(".") == string::npos)
-                continue;
-
-            // value is a float
-            value = stod(str);
-            value = round(value * 100) / 100; // keep 2 number after the point
-            content[i][j] = to_string(value);
-        }
-    }
-    return true;
-}
-
-bool compare_content(map<string, vector<vector<string>>>&a_content, 
-                     map<string, vector<vector<string>>>&b_content)
-{
-    if (a_content.size() != b_content.size()) {
-        cerr << "size not equal: " << a_content.size() << " " << b_content.size() << endl;
-        return false;
-    }
-    
-    for (auto iter = a_content.begin(); iter != a_content.end(); iter++) {
-        auto& table = iter->first;
-        auto& con_table_content = iter->second;
-        
-        if (b_content.count(table) == 0) {
-            cerr << "b_content does not have " << table << endl;
-            return false;
-        }
-
-        auto& seq_table_content = b_content[table];
-
-        nomoalize_content(con_table_content);
-        nomoalize_content(seq_table_content);
-
-        vector<size_t> con_table_set, seq_table_set;
-        hash_output_to_set(con_table_content, con_table_set);
-        hash_output_to_set(seq_table_content, seq_table_set);
-
-        auto size = con_table_set.size();
-        if (size != seq_table_set.size()) {
-            cerr << "table " + table + " sizes are not equal" << endl;
-            output_diff(table, con_table_content, seq_table_content);
-            return false;
-        }
-
-        for (auto i = 0; i < size; i++) {
-            if (con_table_set[i] != seq_table_set[i]) {
-                cerr << "table " + table + " content are not equal" << endl;
-                output_diff(table, con_table_content, seq_table_content);
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-bool compare_output(vector<vector<vector<string>>>& a_output,
-                    vector<vector<vector<string>>>& b_output)
-{
-    auto size = a_output.size();
-    if (size != b_output.size()) {
-        // cerr << "stmt output sizes are not equel: "<< a_output.size() << " " << b_output.size() << endl;
-        return false;
-    }
-
-    for (auto i = 0; i < size; i++) { // for each stmt
-        auto& a_stmt_output = a_output[i];
-        auto& b_stmt_output = b_output[i];
-    
-        nomoalize_content(a_stmt_output);
-        nomoalize_content(b_stmt_output);
-        
-        vector<size_t> a_hash_set, b_hash_set;
-        hash_output_to_set(a_stmt_output, a_hash_set);
-        hash_output_to_set(b_stmt_output, b_hash_set);
-
-        size_t stmt_output_size = a_hash_set.size();
-        if (stmt_output_size != b_hash_set.size()) {
-            // cerr << "stmt[" << i << "] output sizes are not equel: " << a_hash_set.size() << " " << b_hash_set.size() << endl;
-            // output_diff("stmt["+ to_string(i) + "]", a_stmt_output, b_stmt_output);
-            return false;
-        }
-
-        for (auto j = 0; j < stmt_output_size; j++) {
-            if (a_hash_set[j] != b_hash_set[j]) {
-                // cerr << "stmt[" << i << "] output are not equel" << endl;
-                // output_diff("stmt["+ to_string(i) + "]", a_stmt_output, b_stmt_output);
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-int generate_database(dbms_info& d_info)
-{
-    vector<string> stage_1_rec;
-    vector<string> stage_2_rec;
-    
-    cerr << "generating database ... ";
-    dut_reset(d_info);
-
-    auto ddl_stmt_num = d6() + 1; // at least 2 statements to create 2 tables
-    for (auto i = 0; i < ddl_stmt_num; i++)
-        interect_test(d_info, &ddl_statement_factory, stage_1_rec, false); // has disabled the not null, check and unique clause 
-
-    auto basic_dml_stmt_num = 10 + d6(); // 11-20 statements to insert data
-    auto schema = get_schema(d_info); // schema will not change in this stage
-    for (auto i = 0; i < basic_dml_stmt_num; i++) 
-        normal_test(d_info, schema, &basic_dml_statement_factory, stage_2_rec, true);
-
-    dut_backup(d_info);
-    cerr << "done" << endl;
-    return 0;
-}
-
-void gen_stmts_for_one_txn(shared_ptr<schema> &db_schema,
-                        int trans_stmt_num,
-                        vector<shared_ptr<prod>>& trans_rec,
-                        dbms_info& d_info)
-{
-    auto can_error = d_info.can_trigger_error_in_txn;
-    if (can_error == false || d_info.ouput_or_affect_num > 0)
-        dut_reset_to_backup(d_info);
-    
-    vector<shared_ptr<prod>> all_tested_stmts; // if crash, report such statement
-    scope scope;
-    db_schema->fill_scope(scope);
-    int stmt_num = 0;
-    bool succeed = true;
-    int fail_time = 0;
-    int choice = -1;
-    while (1) {
-        if (succeed) 
-            choice = d12();
-        else { // if fail, do not change choice
-            fail_time++;
-            if (fail_time >= 8) {
-                choice = d12();
-                fail_time = 0;
-            }
-        }
-        shared_ptr<prod> gen = txn_statement_factory(&scope, choice);
-        succeed = false;
-
-        ostringstream stmt_stream;
-        gen->out(stmt_stream);
-        auto stmt = stmt_stream.str() + ";";
-
-        if (can_error == false || d_info.ouput_or_affect_num > 0) {
-            try {
-                auto dut = dut_setup(d_info);
-                int affect_num = 0;
-                vector<vector<string>> output;
-                all_tested_stmts.push_back(gen);
-                
-                dut->test(stmt, &output, &affect_num);
-                if (output.size() + affect_num < d_info.ouput_or_affect_num)
-                    continue;
-            } catch (exception &e) {
-                string err = e.what();
-                if (err.find("CONNECTION FAIL") != string::npos ||
-                        err.find("BUG") != string::npos) {
-                    
-                    cerr << err << endl;
-                    ofstream bug_file(NORMAL_BUG_FILE);
-                    for (auto& stmt : all_tested_stmts) 
-                        bug_file << print_stmt_to_string(stmt) << "\n" << endl;
-                    bug_file.close();
-                    throw e;
-                }
-                // cerr << err << ", try again" << endl;
-                // if (err.find("syntax") != string::npos && err.find("error") != string::npos) {
-                //     cerr << RED << "The error statement: " << RESET << endl;
-                //     cerr << stmt << endl;
-                // }
-                continue;
-            }
-        }
-        trans_rec.push_back(gen);
-        succeed = true;
-        stmt_num++;
-        if (stmt_num == trans_stmt_num)
-            break;
     }
 }
 
@@ -609,12 +175,12 @@ void save_current_testcase(vector<shared_ptr<prod>>& stmt_queue,
         minimized_usage_output << usage_queue[i] << endl;
     }
     minimized_usage_output.close();
-    
+
     return;
 }
 
 bool minimize_testcase(dbms_info& d_info,
-                        vector<shared_ptr<prod>>& stmt_queue, 
+                        vector<shared_ptr<prod>>& stmt_queue,
                         vector<int>& tid_queue,
                         vector<stmt_usage> usage_queue)
 {
@@ -626,18 +192,18 @@ bool minimize_testcase(dbms_info& d_info,
         return false;
     }
     cerr << "Yes" << endl;
-    
+
     int max_tid = -1;
     for (auto tid:tid_queue) {
         if (tid > max_tid)
             max_tid = tid;
     }
     int txn_num = max_tid + 1;
-    
+
     auto final_stmt_queue = stmt_queue;
     vector<int> final_tid_queue = tid_queue;
     vector<stmt_usage> final_usage_queue = usage_queue;
-    
+
     // txn level minimize
     for (int tid = 0; tid < txn_num; tid++) {
         cerr << "Try to delete txn " << tid << "..." << endl;
@@ -650,7 +216,7 @@ bool minimize_testcase(dbms_info& d_info,
         for (int i = 0; i < tmp_tid_queue.size(); i++) {
             if (tmp_tid_queue[i] != tid)
                 continue;
-            
+
             tmp_stmt_queue.erase(tmp_stmt_queue.begin() + i);
             tmp_tid_queue.erase(tmp_tid_queue.begin() + i);
             tmp_usage_queue.erase(tmp_usage_queue.begin() + i);
@@ -661,7 +227,7 @@ bool minimize_testcase(dbms_info& d_info,
         for (int i = 0; i < tmp_tid_queue.size(); i++) {
             if (tmp_tid_queue[i] < tid)
                 continue;
-            
+
             tmp_tid_queue[i]--;
         }
 
@@ -674,29 +240,26 @@ bool minimize_testcase(dbms_info& d_info,
         }
         if (trigger_bug == false)
             continue;
-        // auto ret = reproduce_routine(d_info, tmp_stmt_queue, tmp_tid_queue, tmp_usage_queue);
-        // if (ret == false)
-        //     continue;
 
         // reduction succeed
         cerr << "Succeed to delete txn " << tid << "\n\n\n" << endl;
-        
+
         int pause;
         cerr << "Enter an integer: 0 skip, other save" << endl;
         cin >> pause;
         if (pause == 0)
             continue;
-	
+
 	final_stmt_queue = tmp_stmt_queue;
         final_tid_queue = tmp_tid_queue;
         final_usage_queue = tmp_usage_queue;
         tid--;
         txn_num--;
 
-	save_current_testcase(final_stmt_queue, final_tid_queue, final_usage_queue, 
+	save_current_testcase(final_stmt_queue, final_tid_queue, final_usage_queue,
                             "min_stmts.sql", "min_tid.txt", "min_usage.txt");
     }
-    
+
     // stmt level minimize
     auto stmt_num = final_tid_queue.size();
     auto dut = dut_setup(d_info);
@@ -720,12 +283,11 @@ bool minimize_testcase(dbms_info& d_info,
         // do not delete instrumented stmts
         if (tmp_usage_queue[i].is_instrumented == true)
             continue;
-        
+
         auto original_i = i;
 
         // delete possible AFTER_WRITE_READ
         if (i + 1 <= tmp_usage_queue.size() && tmp_usage_queue[i + 1] == AFTER_WRITE_READ) {
-            // deleting later stmt donot need to goback the "i"
             tmp_stmt_queue.erase(tmp_stmt_queue.begin() + i + 1);
             tmp_tid_queue.erase(tmp_tid_queue.begin() + i + 1);
             tmp_usage_queue.erase(tmp_usage_queue.begin() + i + 1);
@@ -739,7 +301,7 @@ bool minimize_testcase(dbms_info& d_info,
         tmp_stmt_num--;
         i--;
 
-        // delete possible BEFORE_WRITE_READ and VERSION_SET_READ, note that i point the element before its original position
+        // delete possible BEFORE_WRITE_READ and VERSION_SET_READ
         while (i >= 0 && (tmp_usage_queue[i] == BEFORE_WRITE_READ ||
                             tmp_usage_queue[i] == VERSION_SET_READ)) {
             tmp_stmt_queue.erase(tmp_stmt_queue.begin() + i);
@@ -760,23 +322,23 @@ bool minimize_testcase(dbms_info& d_info,
             i = original_i;
             continue;
         }
-        
+
         // reduction succeed
         cerr << "Succeed to delete stmt " << "\n\n\n" << endl;
-        
+
 	    int pause;
         cerr << "Enter an integer: 0 skip, other save" << endl;
         cin >> pause;
         if (pause == 0) {
 	        i = original_i;
-	        continue;
+            continue;
 	    }
-	
+
 	    final_stmt_queue = tmp_stmt_queue;
         final_tid_queue = tmp_tid_queue;
         final_usage_queue = tmp_usage_queue;
 	    stmt_num = tmp_stmt_num;
-        save_current_testcase(final_stmt_queue, final_tid_queue, final_usage_queue, 
+        save_current_testcase(final_stmt_queue, final_tid_queue, final_usage_queue,
                             "min_stmts.sql", "min_tid.txt", "min_usage.txt");
     }
 
@@ -787,20 +349,20 @@ bool minimize_testcase(dbms_info& d_info,
     tid_queue = final_tid_queue;
     usage_queue = final_usage_queue;
 
-    save_current_testcase(stmt_queue, tid_queue, usage_queue, 
+    save_current_testcase(stmt_queue, tid_queue, usage_queue,
                             "min_stmts.sql", "min_tid.txt", "min_usage.txt");
 
     return true;
 }
 
 bool reproduce_routine(dbms_info& d_info,
-                        vector<shared_ptr<prod>>& stmt_queue, 
+                        vector<shared_ptr<prod>>& stmt_queue,
                         vector<int>& tid_queue,
                         vector<stmt_usage> usage_queue,
                         string& err_info)
 {
     transaction_test::fork_if_server_closed(d_info);
-    
+
     transaction_test re_test(d_info);
     re_test.stmt_queue = stmt_queue;
     re_test.tid_queue = tid_queue;
@@ -843,10 +405,9 @@ bool reproduce_routine(dbms_info& d_info,
         else
             re_test.trans_arr[tid].status = TXN_ABORT;
     }
-    
+
     try {
         re_test.trans_test();
-        // /* only check memory bugs
         shared_ptr<dependency_analyzer> tmp_da;
         if (re_test.analyze_txn_dependency(tmp_da)) {
             string bug_str = "Find bugs in analyze_txn_dependency";
@@ -879,11 +440,10 @@ bool reproduce_routine(dbms_info& d_info,
             err_info = bug_str;
             return true;
         }
-        // */
     } catch (exception &e) {
         string cur_err_info = e.what();
         cerr << "exception captured by test: " << cur_err_info << endl;
-        if (cur_err_info.find("INSTRUMENT_ERR") != string::npos) // it is cause by: after instrumented, the scheduling change and error in txn_test happens
+        if (cur_err_info.find("INSTRUMENT_ERR") != string::npos)
             return false;
         if (err_info != "" && err_info != cur_err_info) {
             cerr << "not same as the original bug" << endl;
@@ -897,7 +457,7 @@ bool reproduce_routine(dbms_info& d_info,
 }
 
 bool check_txn_cycle(dbms_info& d_info,
-                        vector<shared_ptr<prod>>& stmt_queue, 
+                        vector<shared_ptr<prod>>& stmt_queue,
                         vector<int>& tid_queue,
                         vector<stmt_usage>& usage_queue)
 {
@@ -947,7 +507,7 @@ bool check_txn_cycle(dbms_info& d_info,
         else
             re_test.trans_arr[tid].status = TXN_ABORT;
     }
-    
+
     try {
         re_test.trans_test();
         shared_ptr<dependency_analyzer> tmp_da;
@@ -972,7 +532,7 @@ bool check_txn_cycle(dbms_info& d_info,
 }
 
 void txn_decycle_test(dbms_info& d_info,
-                    vector<shared_ptr<prod>>& stmt_queue, 
+                    vector<shared_ptr<prod>>& stmt_queue,
                     vector<int>& tid_queue,
                     vector<stmt_usage>& usage_queue,
                     int& succeed_time,
@@ -1025,7 +585,7 @@ void txn_decycle_test(dbms_info& d_info,
         else
             re_test.trans_arr[tid].status = TXN_ABORT;
     }
-    
+
     try {
         re_test.trans_test();
         shared_ptr<dependency_analyzer> tmp_da;
@@ -1100,7 +660,7 @@ void txn_decycle_test(dbms_info& d_info,
 }
 
 void check_topo_sort(dbms_info& d_info,
-                    vector<shared_ptr<prod>>& stmt_queue, 
+                    vector<shared_ptr<prod>>& stmt_queue,
                     vector<int>& tid_queue,
                     vector<stmt_usage>& usage_queue,
                     int& succeed_time,
@@ -1152,7 +712,7 @@ void check_topo_sort(dbms_info& d_info,
         else
             re_test.trans_arr[tid].status = TXN_ABORT;
     }
-    
+
     try {
         re_test.trans_test();
         shared_ptr<dependency_analyzer> tmp_da;
@@ -1183,9 +743,5 @@ void check_topo_sort(dbms_info& d_info,
     return;
 }
 
-string print_stmt_to_string(shared_ptr<prod> stmt)
-{
-    ostringstream stmt_stream;
-    stmt->out(stmt_stream);
-    return stmt_stream.str() + ";";
-}
+// kill_process_with_SIGTERM is defined in transaction_test.cc
+// mutex_timeout/cond_timeout are defined in txcheck_run.cc

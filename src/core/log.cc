@@ -1,3 +1,4 @@
+#include "config.h"
 
 #include <iostream>
 #include <pqxx/pqxx>
@@ -14,9 +15,14 @@ using boost::regex_match;
 
 #include <string>
 
+#ifdef _WIN32
+extern "C" int __stdcall gethostname(char *name, int namelen);
+#pragma comment(lib, "ws2_32.lib")
+#else
 extern "C" {
 #include <unistd.h>
 }
+#endif
 
 #include "core/log.hh"
 #include "schema/schema.hh"
@@ -134,7 +140,7 @@ pqxx_logger::pqxx_logger(std::string target, std::string conninfo, struct schema
   c = make_shared<pqxx::connection>(conninfo);
 
   work w(*c);
-  w.exec("set application_name to '" PACKAGE "::log';");
+  w.exec("set application_name to 'dbfuzz::log';");
 
   c->prepare("instance",
 	     "insert into instance (rev, target, hostname, version, seed) "
@@ -146,7 +152,7 @@ pqxx_logger::pqxx_logger(std::string target, std::string conninfo, struct schema
   ostringstream seed;
   seed << smith::rng;
 
-  result r = w.exec_prepared("instance",GITREV,target,hostname,s.version,seed.str());
+  result r = w.exec_prepared("instance",CONFIG_GIT_REVISION,target,hostname,s.version,seed.str());
 
   id = r[0][0].as<long>(id);
 

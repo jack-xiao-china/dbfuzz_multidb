@@ -1,4 +1,4 @@
-#include "sqlite.hh"
+#include "schema/sqlite.hh"
 
 static regex e_syntax("Parse error near[\\s\\S]*: syntax error[\\s\\S]*");
 static regex e_user_abort("callback requested query abort");

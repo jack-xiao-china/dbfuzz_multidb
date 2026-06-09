@@ -59,6 +59,7 @@ struct dut_tidb : dut_base, tidb_connection {
 
     // must be static, because db server may crash, and thus cannot connect again
     static int save_backup_file(string testdb, string path);
+    static int use_backup_file(string backup_file);
     
     virtual string commit_stmt();
     virtual string abort_stmt();

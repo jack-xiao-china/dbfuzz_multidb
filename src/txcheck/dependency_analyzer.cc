@@ -1,4 +1,4 @@
-#include <dependency_analyzer.hh>
+#include "dependency_analyzer.hh"
 
 void history::insert_to_history(operate_unit& oper_unit)
 {
@@ -69,7 +69,7 @@ void dependency_analyzer::build_stmt_depend_from_stmt_idx(int stmt_idx1, int stm
 
 size_t dependency_analyzer::hash_output(row_output& row)
 {
-    register size_t hash = 0; 
+    size_t hash = 0; 
     for (auto& str:row) {
         auto size = str.size();
         for (int i = 0; i < size; i++ ) {

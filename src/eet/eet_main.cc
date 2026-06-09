@@ -1,11 +1,12 @@
+#include "config.h"
 
 #include <map>
 #include <iostream>
 #include "core/dbms_info.hh"
 #include "core/general_process.hh"
-#include "qcn_tester/qcn_tester.hh"
-#include "qcn_tester/qcn_select_tester.hh"
-#include "qcn_tester/qcn_update_tester.hh"
+#include "eet/qcn_tester/qcn_tester.hh"
+#include "eet/qcn_tester/qcn_select_tester.hh"
+#include "eet/qcn_tester/qcn_update_tester.hh"
 #include "qcn_tester/qcn_delete_tester.hh"
 #include "qcn_tester/qcn_cte_tester.hh"
 #include "qcn_tester/qcn_insert_select_tester.hh"
@@ -214,7 +215,7 @@ oceanbase-db|oceanbase-port|oceanbase-host)(?:=((?:.|\n)*))?");
 #ifdef HAVE_LIBSQLITE3
         "    --sqlite=URI           SQLite database to send queries to" << endl <<
 #endif
-#ifdef HAVE_LIBMYSQLCLIENT
+#ifdef HAVE_MYSQL
         "    --mysql-db=constr      MySQL database to send queries to, should be used with mysql-port" << endl <<
         "    --mysql-port=int       MySQL server port number, should be used with mysql-db" << endl <<
         "    --tidb-db=constr   tidb database name to send queries to (should used with" << endl <<

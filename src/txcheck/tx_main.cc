@@ -26,8 +26,10 @@ using boost::regex_match;
 #include "core/impedance.hh"
 #include "schema/dut.hh"
 
+#ifndef _WIN32
 #include <sys/time.h>
 #include <sys/wait.h>
+#endif
 
 using namespace std;
 
@@ -81,7 +83,7 @@ int fork_for_generating_database(dbms_info& d_info)
     write_op_id = 0;
     child_pid = fork();
     if (child_pid == 0) { // in child process
-        generate_database(d_info);
+        generate_database(d_info, 0);
         ofstream output_wkey("wkey.txt");
         output_wkey << write_op_id << endl;
         output_wkey.close();
@@ -237,7 +239,7 @@ int random_test(dbms_info& d_info)
         try {
             // donot fork, so that the static schema can be used in each test case
             transaction_test::fork_if_server_closed(d_info);
-            generate_database(d_info);
+            generate_database(d_info, 0);
             
             // fork_for_generating_database(d_info);
             break;

@@ -1,4 +1,32 @@
 # ============================================================
+# Common settings applied to all object libraries
+# ============================================================
+set(ALL_INCLUDE_DIRS
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+)
+
+# schema.hh includes <pqxx/pqxx> unconditionally, so all targets need pqxx includes
+if(PQXX_FOUND)
+    list(APPEND ALL_INCLUDE_DIRS ${PQXX_INCLUDE_DIRS})
+endif()
+if(PostgreSQL_FOUND)
+    list(APPEND ALL_INCLUDE_DIRS ${PostgreSQL_INCLUDE_DIRS})
+endif()
+
+# Build common compile definitions
+set(COMMON_DEFS "")
+# All feature macros (HAVE_MYSQL, HAVE_TIDB, HAVE_MYSQL_NONBLOCK, HAVE_MARIADB,
+# HAVE_LIBSQLITE3, HAVE_BOOST_REGEX) are managed via config.h's #cmakedefine,
+# so no -D flags needed here.
+
+# Helper function to apply common settings to a target
+function(apply_common target)
+    target_include_directories(${target} PRIVATE ${ALL_INCLUDE_DIRS})
+    target_compile_definitions(${target} PRIVATE ${COMMON_DEFS})
+endfunction()
+
+# ============================================================
 # core_objs
 # ============================================================
 add_library(core_objs OBJECT
@@ -11,22 +39,9 @@ add_library(core_objs OBJECT
     core/dbms_info.cc
     core/general_process.cc
 )
-target_include_directories(core_objs PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_BINARY_DIR}
-)
+apply_common(core_objs)
 if(mysqlclient_FOUND)
     target_include_directories(core_objs PRIVATE ${MYSQL_INCLUDE_DIR})
-    target_compile_definitions(core_objs PRIVATE HAVE_MYSQL HAVE_TIDB)
-    if(HAVE_MYSQL_NONBLOCK)
-        target_compile_definitions(core_objs PRIVATE HAVE_MYSQL_NONBLOCK)
-    endif()
-    if(HAVE_MARIADB)
-        target_compile_definitions(core_objs PRIVATE HAVE_MARIADB)
-    endif()
-endif()
-if(SQLite3_FOUND)
-    target_compile_definitions(core_objs PRIVATE HAVE_LIBSQLITE3)
 endif()
 
 # ============================================================
@@ -35,7 +50,7 @@ endif()
 add_library(grammar_objs OBJECT
     grammar/grammar.cc
 )
-target_include_directories(grammar_objs PRIVATE ${CMAKE_SOURCE_DIR}/src)
+apply_common(grammar_objs)
 
 # ============================================================
 # expr_objs
@@ -69,12 +84,7 @@ add_library(expr_objs OBJECT
     expr/bool_expr/bool_binop/bool_binop.cc
     expr/bool_expr/bool_binop/comparison_op.cc
 )
-target_include_directories(expr_objs PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/src/expr
-    ${CMAKE_SOURCE_DIR}/src/expr/bool_expr
-    ${CMAKE_SOURCE_DIR}/src/expr/bool_expr/bool_binop
-)
+apply_common(expr_objs)
 
 # ============================================================
 # schema_objs
@@ -82,11 +92,21 @@ target_include_directories(expr_objs PRIVATE
 set(SCHEMA_SOURCES
     schema/schema.cc
     schema/dut.cc
-    schema/postgres.cc
-    schema/clickhouse.cc
-    schema/yugabyte.cc
-    schema/cockroach.cc
 )
+
+# PostgreSQL-based schemas (need pqxx)
+if(PQXX_FOUND AND PostgreSQL_FOUND)
+    list(APPEND SCHEMA_SOURCES
+        schema/postgres.cc
+        schema/cockroach.cc
+        schema/yugabyte.cc
+        schema/gaussdb.cc
+    )
+endif()
+
+# clickhouse doesn't use pqxx directly for schema
+list(APPEND SCHEMA_SOURCES schema/clickhouse.cc)
+
 if(mysqlclient_FOUND)
     list(APPEND SCHEMA_SOURCES
         schema/mysql.cc
@@ -102,16 +122,15 @@ if(SQLite3_FOUND)
 endif()
 
 add_library(schema_objs OBJECT ${SCHEMA_SOURCES})
-target_include_directories(schema_objs PRIVATE ${CMAKE_SOURCE_DIR}/src)
+apply_common(schema_objs)
 if(mysqlclient_FOUND)
     target_include_directories(schema_objs PRIVATE ${MYSQL_INCLUDE_DIR})
-    target_compile_definitions(schema_objs PRIVATE HAVE_MYSQL HAVE_TIDB)
-    if(HAVE_MARIADB)
-        target_compile_definitions(schema_objs PRIVATE HAVE_MARIADB)
-    endif()
 endif()
-if(SQLite3_FOUND)
-    target_compile_definitions(schema_objs PRIVATE HAVE_LIBSQLITE3)
+if(PQXX_FOUND)
+    target_include_directories(schema_objs PRIVATE ${PQXX_INCLUDE_DIRS})
+endif()
+if(PostgreSQL_FOUND)
+    target_include_directories(schema_objs PRIVATE ${PostgreSQL_INCLUDE_DIRS})
 endif()
 
 # ============================================================
@@ -122,10 +141,12 @@ add_library(txcheck_objs OBJECT
     txcheck/instrumentor.cc
     txcheck/dependency_analyzer.cc
     txcheck/tx_general_process.cc
-    # txcheck_run.cc provides txcheck_run() stub; tx_main.cc (original main) excluded
     txcheck/txcheck_run.cc
 )
-target_include_directories(txcheck_objs PRIVATE ${CMAKE_SOURCE_DIR}/src)
+apply_common(txcheck_objs)
+if(mysqlclient_FOUND)
+    target_include_directories(txcheck_objs PRIVATE ${MYSQL_INCLUDE_DIR})
+endif()
 
 # ============================================================
 # eet_objs
@@ -138,10 +159,12 @@ add_library(eet_objs OBJECT
     eet/qcn_tester/qcn_cte_tester.cc
     eet/qcn_tester/qcn_insert_select_tester.cc
     eet/eet_general_process.cc
-    # eet_run.cc provides eet_run() stub; eet_main.cc (original main) excluded
     eet/eet_run.cc
 )
-target_include_directories(eet_objs PRIVATE ${CMAKE_SOURCE_DIR}/src)
+apply_common(eet_objs)
+if(mysqlclient_FOUND)
+    target_include_directories(eet_objs PRIVATE ${MYSQL_INCLUDE_DIR})
+endif()
 
 # ============================================================
 # cross_objs
@@ -150,7 +173,7 @@ add_library(cross_objs OBJECT
     cross/cross_tester.cc
     cross/cross_main.cc
 )
-target_include_directories(cross_objs PRIVATE ${CMAKE_SOURCE_DIR}/src)
+apply_common(cross_objs)
 
 # ============================================================
 # Final executable
@@ -166,22 +189,33 @@ add_executable(dbfuzz
     $<TARGET_OBJECTS:cross_objs>
 )
 
-target_include_directories(dbfuzz PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_BINARY_DIR}
-)
+target_include_directories(dbfuzz PRIVATE ${ALL_INCLUDE_DIRS})
+target_compile_definitions(dbfuzz PRIVATE ${COMMON_DEFS})
 
-target_link_libraries(dbfuzz PRIVATE
-    Boost::regex
-    PkgConfig::PQXX
-    PostgreSQL::PostgreSQL
-)
+# --- Link libraries ---
 
+# Boost regex (optional)
+if(HAVE_BOOST_REGEX)
+    target_link_libraries(dbfuzz PRIVATE Boost::regex)
+endif()
+
+# libpqxx + PostgreSQL (optional)
+if(PQXX_FOUND AND PostgreSQL_FOUND)
+    target_link_libraries(dbfuzz PRIVATE PkgConfig::PQXX PostgreSQL::PostgreSQL)
+endif()
+
+# MySQL client (optional)
 if(mysqlclient_FOUND)
     target_link_libraries(dbfuzz PRIVATE ${MYSQL_LIBRARY})
     target_include_directories(dbfuzz PRIVATE ${MYSQL_INCLUDE_DIR})
 endif()
 
+# SQLite3 (optional)
 if(SQLite3_FOUND)
     target_link_libraries(dbfuzz PRIVATE SQLite::SQLite3)
+endif()
+
+# Windows-specific libraries
+if(WIN32)
+    target_link_libraries(dbfuzz PRIVATE ws2_32)
 endif()

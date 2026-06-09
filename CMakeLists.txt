@@ -1,18 +1,40 @@
 cmake_minimum_required(VERSION 3.14)
-project(dbfuzz VERSION 1.0.8 LANGUAGES CXX)
+project(dbfuzz VERSION 1.0.10 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # --- Required dependencies ---
-find_package(Boost REQUIRED COMPONENTS regex)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(PQXX REQUIRED IMPORTED_TARGET libpqxx)
-find_package(PostgreSQL REQUIRED)
+
+# Boost regex: optional, code falls back to std::regex when unavailable
+find_package(Boost COMPONENTS regex)
+if(Boost_FOUND AND Boost_REGEX_FOUND)
+    set(HAVE_BOOST_REGEX TRUE)
+    message(STATUS "Boost.Regex found")
+else()
+    set(HAVE_BOOST_REGEX FALSE)
+    message(STATUS "Boost.Regex not found - using std::regex fallback")
+endif()
+
+# PkgConfig for libpqxx
+find_package(PkgConfig)
+
+# libpqxx: optional (needed for PostgreSQL schema)
+if(PkgConfig_FOUND)
+    pkg_check_modules(PQXX IMPORTED_TARGET libpqxx)
+endif()
+
+# PostgreSQL: optional
+find_package(PostgreSQL)
+
+if(NOT PQXX_FOUND OR NOT PostgreSQL_FOUND)
+    message(STATUS "libpqxx or PostgreSQL not found - PostgreSQL schema support disabled")
+endif()
 
 # --- Optional dependencies ---
 find_package(SQLite3)
 if(SQLite3_FOUND)
+    set(HAVE_LIBSQLITE3 1)
     message(STATUS "SQLite3 found: ${SQLite3_VERSION}")
 endif()
 
@@ -21,6 +43,8 @@ find_path(MYSQL_INCLUDE_DIR mysql/mysql.h)
 find_library(MYSQL_LIBRARY NAMES mysqlclient)
 if(MYSQL_INCLUDE_DIR AND MYSQL_LIBRARY)
     set(mysqlclient_FOUND TRUE)
+    set(HAVE_MYSQL 1)
+    set(HAVE_TIDB 1)
     message(STATUS "mysqlclient found: ${MYSQL_LIBRARY}")
 
     # Check for nonblocking API (MySQL 8.x)
@@ -41,6 +65,11 @@ configure_file(
     ${CMAKE_SOURCE_DIR}/src/config.h.in
     ${CMAKE_BINARY_DIR}/config.h
 )
+
+# --- Platform detection ---
+if(WIN32)
+    message(STATUS "Building for Windows (MinGW/MSVC)")
+endif()
 
 add_subdirectory(src)
 

@@ -1,4 +1,4 @@
-#include "tidb.hh"
+#include "schema/tidb.hh"
 
 static regex e_unknown_database("[\\s\\S]*Unknown database[\\s\\S]*");
 static regex e_crash("[\\s\\S]*Lost connection[\\s\\S]*");
@@ -593,6 +593,12 @@ int dut_tidb::save_backup_file(string testdb, string path)
 {
     string bk_file = "/tmp/" + testdb + "_bk.sql";
     string cp_cmd = "cp " + bk_file + " " + path;
+    return system(cp_cmd.c_str());
+}
+
+int dut_tidb::use_backup_file(string backup_file)
+{
+    string cp_cmd = "cp " + backup_file + " /tmp/tidb_bk.sql";
     return system(cp_cmd.c_str());
 }
 

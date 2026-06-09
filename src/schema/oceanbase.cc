@@ -1,7 +1,7 @@
 #include <stdexcept>
 #include <cassert>
 #include <cstring>
-#include "oceanbase.hh"
+#include "schema/oceanbase.hh"
 #include <iostream>
 #include <set>
 #include <iomanip>

@@ -1,4 +1,4 @@
-#include "yugabyte.hh"
+#include "schema/yugabyte.hh"
 
 #include <iostream>
 #include <iomanip>
@@ -693,6 +693,11 @@ static bool is_expected_error(string error)
         || error.find("could not create unique index") != string::npos
         || error.find("Unicode categorization can only be performed if server encoding is UTF8") != string::npos
         || error.find("invalid type name") != string::npos
+        // Crash-related patterns
+        || error.find("server closed the connection unexpectedly") != string::npos
+        || error.find("connection to server was lost") != string::npos
+        || error.find("server terminated unexpectedly") != string::npos
+        || error.find("no connection to the server") != string::npos
         )
         return true;
 
@@ -732,6 +737,11 @@ void dut_yugabyte::test(const string &stmt,
         while (res != NULL) {
             res = PQgetResult(conn);
             PQclear(res);
+        }
+
+        // Crash detection: if connection is lost, report as BUG
+        if (PQstatus(conn) == CONNECTION_BAD) {
+            throw runtime_error("BUG!!! [YUGABYTE] connection lost: " + err + " in dut_yugabyte::test");
         }
 
         if (is_expected_error(err))

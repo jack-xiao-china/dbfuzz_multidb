@@ -1,3 +1,4 @@
+#include "config.h"
 #include "core/general_process.hh"
 
 #define DB_RECORD_FILE "db_setup.sql"
@@ -35,9 +36,9 @@ shared_ptr<schema> get_schema(dbms_info& d_info)
             schema = make_shared<schema_sqlite>(d_info.test_db, true);
         #endif
 
-        #ifdef HAVE_LIBMYSQLCLIENT
+        #ifdef HAVE_MYSQL
         else if (d_info.dbms_name == "mysql")
-            schema = make_shared<schema_mysql>(d_info.test_db, d_info.test_port);
+            schema = make_shared<schema_mysql>(d_info.test_db, d_info.test_port, d_info.host_addr, d_info.dbms_user, d_info.dbms_pass);
         else if (d_info.dbms_name == "oceanbase")
             schema = make_shared<schema_ob>(d_info.test_db, d_info.test_port, d_info.host_addr);
         else if (d_info.dbms_name == "tidb")
@@ -45,13 +46,15 @@ shared_ptr<schema> get_schema(dbms_info& d_info)
         #endif
 
         else if (d_info.dbms_name == "postgres")
-            schema = make_shared<schema_pqxx>(d_info.test_db, d_info.test_port, d_info.inst_path, true);
+            schema = make_shared<schema_pqxx>(d_info.test_db, d_info.test_port, d_info.inst_path, true, d_info.host_addr, d_info.dbms_user, d_info.dbms_pass);
         else if (d_info.dbms_name == "clickhouse")
             schema = make_shared<schema_clickhouse>(d_info.test_db, d_info.test_port);
         else if (d_info.dbms_name == "yugabyte")
             schema = make_shared<schema_yugabyte>(d_info.test_db, d_info.test_port, d_info.host_addr, true);
         else if (d_info.dbms_name == "cockroach")
             schema = make_shared<schema_cockroach>(d_info.test_db, d_info.test_port, d_info.host_addr, true);
+        else if (d_info.dbms_name == "gaussdb_m" || d_info.dbms_name == "gaussdb_a")
+            schema = make_shared<schema_gaussdb>(d_info.test_db, d_info.test_port, d_info.host_addr, d_info.dbms_user, d_info.dbms_pass, true);
         else {
             cerr << d_info.dbms_name << " is not supported yet in get_schema()" << endl;
             throw runtime_error("Unsupported DBMS in get_schema()");
@@ -89,9 +92,9 @@ shared_ptr<dut_base> dut_setup(dbms_info& d_info)
         dut = make_shared<dut_sqlite>(d_info.test_db);
     #endif
 
-    #ifdef HAVE_LIBMYSQLCLIENT
+    #ifdef HAVE_MYSQL
     else if (d_info.dbms_name == "mysql")
-        dut = make_shared<dut_mysql>(d_info.test_db, d_info.test_port);
+        dut = make_shared<dut_mysql>(d_info.test_db, d_info.test_port, d_info.host_addr, d_info.dbms_user, d_info.dbms_pass);
     else if (d_info.dbms_name == "oceanbase")
         dut = make_shared<dut_ob>(d_info.test_db, d_info.test_port, d_info.host_addr);
     else if (d_info.dbms_name == "tidb")
@@ -101,11 +104,13 @@ shared_ptr<dut_base> dut_setup(dbms_info& d_info)
     else if (d_info.dbms_name == "clickhouse")
         dut = make_shared<dut_clickhouse>(d_info.test_db, d_info.test_port, DB_RECORD_FILE);
     else if (d_info.dbms_name == "postgres")
-        dut = make_shared<dut_libpq>(d_info.test_db, d_info.test_port, d_info.inst_path);
+        dut = make_shared<dut_libpq>(d_info.test_db, d_info.test_port, d_info.inst_path, d_info.host_addr, d_info.dbms_user, d_info.dbms_pass);
     else if (d_info.dbms_name == "yugabyte")
         dut = make_shared<dut_yugabyte>(d_info.test_db, d_info.test_port, d_info.host_addr);
     else if (d_info.dbms_name == "cockroach")
         dut = make_shared<dut_cockroach>(d_info.test_db, d_info.test_port, d_info.host_addr);
+    else if (d_info.dbms_name == "gaussdb_m" || d_info.dbms_name == "gaussdb_a")
+        dut = make_shared<dut_gaussdb>(d_info.test_db, d_info.test_port, d_info.host_addr, d_info.dbms_user, d_info.dbms_pass);
     else {
         cerr << d_info.dbms_name << " is not installed, or it is not supported yet in dut_setup()" << endl;
         throw runtime_error("Unsupported DBMS in dut_setup()");
@@ -138,7 +143,7 @@ int save_backup_file(string path, dbms_info& d_info)
         return dut_sqlite::save_backup_file(path, d_info.test_db);
     #endif
 
-    #ifdef HAVE_LIBMYSQLCLIENT
+    #ifdef HAVE_MYSQL
     else if (d_info.dbms_name == "mysql")
         return dut_mysql::save_backup_file(d_info.test_db, path);
     else if (d_info.dbms_name == "oceanbase")
@@ -154,6 +159,8 @@ int save_backup_file(string path, dbms_info& d_info)
         return dut_yugabyte::save_backup_file(d_info.test_db, path);
     else if (d_info.dbms_name == "cockroach")
         return dut_cockroach::save_backup_file(d_info.test_db, path);
+    else if (d_info.dbms_name == "gaussdb_m" || d_info.dbms_name == "gaussdb_a")
+        return dut_gaussdb::save_backup_file(d_info.test_db, path);
     else if (d_info.dbms_name == "clickhouse") {
         string cmd = "cp " + string(DB_RECORD_FILE) + " " + path;
         return system(cmd.c_str());
@@ -173,7 +180,7 @@ pid_t fork_db_server(dbms_info& d_info)
         fork_pid = 0;
     #endif
 
-    #ifdef HAVE_LIBMYSQLCLIENT
+    #ifdef HAVE_MYSQL
     else if (d_info.dbms_name == "mysql")
         fork_pid = dut_mysql::fork_db_server();
     else if (d_info.dbms_name == "oceanbase") {
@@ -194,6 +201,9 @@ pid_t fork_db_server(dbms_info& d_info)
     else if (d_info.dbms_name == "cockroach") {
         // Do nothing, because the server crash means there is a bug
         // fork_pid = dut_libpq::fork_db_server();
+    }
+    else if (d_info.dbms_name == "gaussdb_m" || d_info.dbms_name == "gaussdb_a") {
+        // Do nothing, because the server crash means there is a bug
     }
     else {
         cerr << d_info.dbms_name << " is not supported yet in fork_db_server()" << endl;
@@ -293,13 +303,15 @@ void interect_test(dbms_info& d_info,
 
         string err = e.what();
         cerr << "err: " << e.what() << endl;
-        bool expected = (err.find("expected error") != string::npos) || (err.find("timeout") != string::npos);
-        if (!expected) {
+
+        // Genuine bugs (server crash, connection loss) must still abort
+        if (err.find("BUG") != string::npos || err.find("CONNECTION FAIL") != string::npos) {
             save_query(".", "unexpected.sql", sql);
-            cerr << "unexpected error in interect_test: " << err << endl;
-            cerr << "cannot save backup as generating db is not finished"<< endl;
-            abort(); // stop if trigger unexpected error
+            cerr << "fatal error in interect_test: " << err << endl;
+            abort();
         }
+
+        // All other errors are treated as expected during random SQL generation
         if (try_time >= 8) {
             cerr << "Fail in interect_test() " << try_time << " times, return" << endl;
             cerr << "err: " << e.what() << endl;
@@ -344,13 +356,15 @@ void normal_test(dbms_info& d_info,
         dbms_execution_ms = dbms_execution_ms + (get_cur_time_ms() - test_start);
 
         string err = e.what();
-        bool expected = (err.find("expected error") != string::npos) || (err.find("timeout") != string::npos);
-        if (!expected) {
+
+        // Genuine bugs (server crash, connection loss) must still abort
+        if (err.find("BUG") != string::npos || err.find("CONNECTION FAIL") != string::npos) {
             save_query(".", "unexpected.sql", sql);
-            cerr << "unexpected error in normal_test: " << err << endl;
-            cerr << "cannot save backup as generating db is not finished"<< endl;
-            abort(); // stop if trigger unexpected error
+            cerr << "fatal error in normal_test: " << err << endl;
+            abort();
         }
+
+        // All other errors are treated as expected during random SQL generation
         if (try_time >= 8) {
             cerr << "Fail in normal_test() " << try_time << " times, return" << endl;
             cerr << "SQL: " << sql << endl;

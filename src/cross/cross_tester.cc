@@ -163,7 +163,7 @@ bool cross_tester::revalidate_bug(
 // ---------------------------------------------------------------------------
 // cross_test: main entry point
 // ---------------------------------------------------------------------------
-bool cross_tester::cross_test() {
+bool cross_tester::cross_test(const string& bug_dir) {
     // -----------------------------------------------------------------------
     // Phase 1: Set up and run TxCheck to get dependency analysis
     // -----------------------------------------------------------------------
@@ -346,5 +346,209 @@ bool cross_tester::cross_test() {
     }
 
     cerr << RED << "cross_test: BUG CONFIRMED after re-validation!" << RESET << endl;
+
+    // Save bug data for minimize() to use later
+    last_path_stmts = path_stmts;
+    last_path_usages = path_usages;
+    last_bug_confirmed = true;
+
+    // Save full bug report if bug_dir is provided
+    if (!bug_dir.empty()) {
+        save_bug_report(bug_dir, path_stmts, path_usages,
+                        tx_results, normal_results, transformed_results);
+    }
+
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// write_results: write a multiset of row_output to a file
+// ---------------------------------------------------------------------------
+void cross_tester::write_results(const string& filename, multiset<row_output>& results) {
+    ofstream out(filename);
+    if (!out.is_open()) {
+        cerr << "write_results: cannot open " << filename << endl;
+        return;
+    }
+    for (auto& row : results) {
+        for (auto& col : row)
+            out << col << "\t";
+        out << "\n";
+    }
+    out.close();
+}
+
+// ---------------------------------------------------------------------------
+// save_bug_report: save all bug-triggering artifacts to the bug directory
+// ---------------------------------------------------------------------------
+void cross_tester::save_bug_report(
+    const string& bug_dir,
+    vector<shared_ptr<prod>>& path_stmts,
+    vector<int>& path_usages,
+    multiset<row_output>& tx_results,
+    multiset<row_output>& normal_results,
+    multiset<row_output>& transformed_results)
+{
+    // Save normal_stmts.sql — the non-transactional path statements with usage annotations
+    {
+        ofstream stmts_file(bug_dir + "/normal_stmts.sql");
+        for (size_t i = 0; i < path_stmts.size(); i++) {
+            stmts_file << "-- usage: " << path_usages[i] << "\n";
+            stmts_file << print_stmt_to_string(path_stmts[i]) << "\n\n";
+        }
+        stmts_file.close();
+    }
+
+    // Save transformed_select_stmts.sql — only the SELECT statements after EET transform
+    {
+        ofstream trans_file(bug_dir + "/eet_select_stmts.sql");
+        vector<int> select_indices;
+        for (size_t i = 0; i < path_stmts.size(); i++) {
+            if (is_select_like_usage(path_usages[i])) {
+                transform_select(path_stmts[i]);
+                select_indices.push_back(i);
+            }
+        }
+        for (auto idx : select_indices) {
+            trans_file << "-- original usage: " << path_usages[idx] << "\n";
+            trans_file << print_stmt_to_string(path_stmts[idx]) << "\n\n";
+        }
+        // Restore AST
+        for (auto idx : select_indices)
+            back_transform_select(path_stmts[idx]);
+        trans_file.close();
+    }
+
+    // Save result files
+    write_results(bug_dir + "/tx_results.out", tx_results);
+    write_results(bug_dir + "/normal_results.out", normal_results);
+    write_results(bug_dir + "/eet_select_results.out", transformed_results);
+
+    // Save database backup
+    save_backup_file(bug_dir, d_info);
+
+    cerr << "cross_test: bug report saved to " << bug_dir << endl;
+}
+
+// ---------------------------------------------------------------------------
+// minimize: reduce the cross-mode test case
+// ---------------------------------------------------------------------------
+void cross_tester::minimize(const string& bug_dir) {
+    if (!last_bug_confirmed || last_path_stmts.empty()) {
+        cerr << "minimize: no confirmed bug to minimize" << endl;
+        return;
+    }
+
+    cerr << "minimize: starting with " << last_path_stmts.size() << " statements" << endl;
+
+    // Phase 1: Statement-level minimization
+    // Try removing each non-SELECT statement and check if bug still triggers
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (size_t i = 0; i < last_path_stmts.size(); i++) {
+            // Don't remove SELECT statements in phase 1 (handled in phase 2)
+            if (is_select_like_usage(last_path_usages[i]))
+                continue;
+
+            // Try removing statement i
+            auto tmp_stmts = last_path_stmts;
+            auto tmp_usages = last_path_usages;
+            tmp_stmts.erase(tmp_stmts.begin() + i);
+            tmp_usages.erase(tmp_usages.begin() + i);
+
+            if (tmp_stmts.empty())
+                break;
+
+            // Re-test: execute normal path and transformed path
+            dut_reset_to_backup(d_info);
+            multiset<row_output> re_normal;
+            map<string, vector<vector<string>>> re_normal_content;
+            execute_normal_path(tmp_stmts, tmp_usages, re_normal, re_normal_content);
+
+            // Transform and execute
+            vector<int> select_indices;
+            for (size_t j = 0; j < tmp_stmts.size(); j++) {
+                if (is_select_like_usage(tmp_usages[j])) {
+                    transform_select(tmp_stmts[j]);
+                    select_indices.push_back(j);
+                }
+            }
+            dut_reset_to_backup(d_info);
+            multiset<row_output> re_transformed;
+            map<string, vector<vector<string>>> re_transformed_content;
+            execute_normal_path(tmp_stmts, tmp_usages, re_transformed, re_transformed_content);
+
+            // Restore AST
+            for (auto idx : select_indices)
+                back_transform_select(tmp_stmts[idx]);
+
+            // Check if EET difference persists
+            bool diff_persists = (re_normal != re_transformed)
+                                 || !compare_content(re_normal_content, re_transformed_content);
+
+            if (diff_persists) {
+                cerr << "minimize: removed statement " << i << " (" << tmp_stmts.size() << " remaining)" << endl;
+                last_path_stmts = tmp_stmts;
+                last_path_usages = tmp_usages;
+                changed = true;
+                break;
+            }
+        }
+    }
+
+    // Phase 2: SELECT transform minimization
+    // Try reverting each SELECT transform and check if bug still triggers
+    for (size_t i = 0; i < last_path_stmts.size(); i++) {
+        if (!is_select_like_usage(last_path_usages[i]))
+            continue;
+
+        // Try not transforming statement i
+        auto tmp_stmts = last_path_stmts;
+        auto tmp_usages = last_path_usages;
+
+        // Transform all SELECTs except i
+        vector<int> select_indices;
+        for (size_t j = 0; j < tmp_stmts.size(); j++) {
+            if (is_select_like_usage(tmp_usages[j]) && j != i) {
+                transform_select(tmp_stmts[j]);
+                select_indices.push_back(j);
+            }
+        }
+
+        dut_reset_to_backup(d_info);
+        multiset<row_output> re_normal;
+        map<string, vector<vector<string>>> re_normal_content;
+        execute_normal_path(last_path_stmts, last_path_usages, re_normal, re_normal_content);
+
+        dut_reset_to_backup(d_info);
+        multiset<row_output> re_transformed;
+        map<string, vector<vector<string>>> re_transformed_content;
+        execute_normal_path(tmp_stmts, tmp_usages, re_transformed, re_transformed_content);
+
+        // Restore AST
+        for (auto idx : select_indices)
+            back_transform_select(tmp_stmts[idx]);
+
+        bool diff_persists = (re_normal != re_transformed)
+                             || !compare_content(re_normal_content, re_transformed_content);
+
+        if (!diff_persists) {
+            // Transform of stmt i is necessary for the bug — keep it
+            continue;
+        }
+
+        // Transform of stmt i is NOT necessary — revert it by marking as non-SELECT
+        cerr << "minimize: reverted SELECT transform at index " << i << endl;
+        last_path_usages[i] = 0;  // mark as non-SELECT to skip future transforms
+    }
+
+    // Save minimized test case
+    string min_dir = bug_dir + "/minimized";
+    make_dir_error_exit(min_dir);
+    multiset<row_output> empty1, empty2, empty3;
+    save_bug_report(min_dir, last_path_stmts, last_path_usages,
+                    empty1, empty2, empty3);
+
+    cerr << "minimize: done, " << last_path_stmts.size() << " statements remaining" << endl;
 }

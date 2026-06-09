@@ -1,3 +1,4 @@
+#include "config.h"
 #include "core/dbms_info.hh"
 
 dbms_info::dbms_info(map<string,string>& options)
@@ -36,6 +37,9 @@ dbms_info::dbms_info(map<string,string>& options)
         dbms_name = "mysql";
         test_port = stoi(options["mysql-port"]);
         test_db = options["mysql-db"];
+        host_addr = options.count("mysql-host") ? options["mysql-host"] : "127.0.0.1";
+        dbms_user = options.count("mysql-user") ? options["mysql-user"] : "root";
+        dbms_pass = options.count("mysql-pass") ? options["mysql-pass"] : "";
         can_trigger_error_in_txn = true;
     }
     #ifdef HAVE_MARIADB
@@ -65,6 +69,9 @@ dbms_info::dbms_info(map<string,string>& options)
         dbms_name = "postgres";
         test_port = stoi(options["postgres-port"]);
         test_db = options["postgres-db"];
+        host_addr = options.count("postgres-host") ? options["postgres-host"] : "localhost";
+        dbms_user = options.count("postgres-user") ? options["postgres-user"] : "";
+        dbms_pass = options.count("postgres-pass") ? options["postgres-pass"] : "";
         inst_path = options.count("postgres-path") ? options["postgres-path"] : "/usr/local/pgsql";
         can_trigger_error_in_txn = false;
     }
@@ -84,6 +91,28 @@ dbms_info::dbms_info(map<string,string>& options)
         test_port = stoi(options["cockroach-port"]);
         test_db = options["cockroach-db"];
         host_addr = options["cockroach-host"];
+        can_trigger_error_in_txn = false;
+    }
+    else if (options.count("gaussdb-m-db") &&
+                    options.count("gaussdb-m-port") &&
+                    options.count("gaussdb-m-host")) {
+        dbms_name = "gaussdb_m";
+        test_port = stoi(options["gaussdb-m-port"]);
+        test_db = options["gaussdb-m-db"];
+        host_addr = options["gaussdb-m-host"];
+        dbms_user = options.count("gaussdb-m-user") ? options["gaussdb-m-user"] : "";
+        dbms_pass = options.count("gaussdb-m-pass") ? options["gaussdb-m-pass"] : "";
+        can_trigger_error_in_txn = false;
+    }
+    else if (options.count("gaussdb-a-db") &&
+                    options.count("gaussdb-a-port") &&
+                    options.count("gaussdb-a-host")) {
+        dbms_name = "gaussdb_a";
+        test_port = stoi(options["gaussdb-a-port"]);
+        test_db = options["gaussdb-a-db"];
+        host_addr = options["gaussdb-a-host"];
+        dbms_user = options.count("gaussdb-a-user") ? options["gaussdb-a-user"] : "";
+        dbms_pass = options.count("gaussdb-a-pass") ? options["gaussdb-a-pass"] : "";
         can_trigger_error_in_txn = false;
     }
     else {

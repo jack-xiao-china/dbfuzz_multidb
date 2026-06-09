@@ -22,6 +22,8 @@ struct dbms_info {
     int ouput_or_affect_num;
     bool can_trigger_error_in_txn;
     string host_addr;
+    string dbms_user;
+    string dbms_pass;
 
     test_mode mode;
     int db_test_num;
@@ -38,6 +40,8 @@ struct dbms_info {
         ouput_or_affect_num = 0;
         can_trigger_error_in_txn = false;
         host_addr = "";
+        dbms_user = "";
+        dbms_pass = "";
         mode = MODE_EET;
         db_test_num = 50;
         db_table_num = 0;

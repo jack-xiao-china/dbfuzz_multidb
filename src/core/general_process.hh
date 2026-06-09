@@ -1,6 +1,8 @@
 #ifndef GENERAL_PROCESS_HH
 #define GENERAL_PROCESS_HH
 
+#include "config.h"
+
 #include <string> // for string
 #include <map> // for map
 #include <memory> //for shared_ptr
@@ -8,26 +10,34 @@
 #include "schema/dut.hh" // for dut_base
 #include <sys/stat.h> // for mkdir
 #include <algorithm> // for sort
+#ifndef _WIN32
 #include <sys/time.h>
+#else
+#include <sys/timeb.h>
+#endif
+#ifndef _WIN32
 #include <sys/wait.h>
-
- // for PACKAGE_NAME
+#endif
 
 // for supported dbms ---
 #ifdef HAVE_LIBSQLITE3
-#include "sqlite.hh"
+#include "schema/sqlite.hh"
 #endif
 
-#ifdef HAVE_LIBMYSQLCLIENT
-#include "tidb.hh"
-#include "mysql.hh"
-#include "oceanbase.hh"
+#ifdef HAVE_MYSQL
+#include "schema/tidb.hh"
+#include "schema/mysql.hh"
+#include "schema/oceanbase.hh"
 #endif
 
-#include "postgres.hh"
-#include "clickhouse.hh"
-#include "yugabyte.hh"
-#include "cockroach.hh"
+#ifdef PQXX_FOUND
+#include "schema/postgres.hh"
+#include "schema/yugabyte.hh"
+#include "schema/cockroach.hh"
+#include "schema/gaussdb.hh"
+#endif
+
+#include "schema/clickhouse.hh"
 // ---
 
 #include "grammar/grammar.hh" // for statement gen
