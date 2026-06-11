@@ -38,6 +38,7 @@ add_library(core_objs OBJECT
     core/log.cc
     core/dbms_info.cc
     core/general_process.cc
+    core/known_errors.cc
 )
 apply_common(core_objs)
 if(mysqlclient_FOUND)
@@ -49,6 +50,8 @@ endif()
 # ============================================================
 add_library(grammar_objs OBJECT
     grammar/grammar.cc
+    grammar/savepoint_stmt.cc
+    grammar/lock_stmt.cc
 )
 apply_common(grammar_objs)
 
@@ -78,6 +81,14 @@ add_library(expr_objs OBJECT
     expr/bool_expr/exists_predicate.cc
     expr/bool_expr/const_bool.cc
     expr/bool_expr/in_query.cc
+    expr/bool_expr/quantified_comparison.cc
+    expr/bool_expr/regexp_expr.cc
+    expr/bool_expr/member_of_expr.cc
+    expr/json_expr.cc
+    expr/row_constructor.cc
+    expr/cast_expr.cc
+    expr/interval_expr.cc
+    expr/mysql_json_expr.cc
     # bool_binop
     expr/bool_expr/bool_binop/distinct_pred.cc
     expr/bool_expr/bool_binop/bool_term.cc
@@ -176,6 +187,14 @@ add_library(cross_objs OBJECT
 apply_common(cross_objs)
 
 # ============================================================
+# smoke_objs
+# ============================================================
+add_library(smoke_objs OBJECT
+    smoke/smoke_run.cc
+)
+apply_common(smoke_objs)
+
+# ============================================================
 # Final executable
 # ============================================================
 add_executable(dbfuzz
@@ -187,6 +206,7 @@ add_executable(dbfuzz
     $<TARGET_OBJECTS:txcheck_objs>
     $<TARGET_OBJECTS:eet_objs>
     $<TARGET_OBJECTS:cross_objs>
+    $<TARGET_OBJECTS:smoke_objs>
 )
 
 target_include_directories(dbfuzz PRIVATE ${ALL_INCLUDE_DIRS})

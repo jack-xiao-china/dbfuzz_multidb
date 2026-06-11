@@ -164,7 +164,46 @@ schema_mysql::schema_mysql(string db, unsigned int port,
                            string host, string user, string pass)
   : mysql_connection(db, port, host, user, pass)
 {
-    // Loading tables...;
+    target_dbms = "mysql";
+
+    // ── Canonical types (must be created BEFORE aliases and column loading) ──
+    booltype = sqltype::get("tinyint");
+    inttype = sqltype::get("int");
+    realtype = sqltype::get("double");
+    texttype = sqltype::get("varchar(200)");
+    datetype = sqltype::get("DATETIME");
+
+    // ── Type aliasing: map all MySQL DATA_TYPE variants to canonical types ──
+    // This ensures columns with BIGINT/FLOAT/TEXT etc. are compatible with
+    // functions/operators defined on inttype/realtype/texttype.
+    // Reference: sql_yacc.yy field_type: rule (~line 12500) for complete type list
+
+    // Integer types → inttype
+    for (auto &alias : {"bigint", "mediumint", "smallint", "tinyint", "integer"})
+        sqltype::typemap[alias] = inttype;
+
+    // Real/float types → realtype
+    for (auto &alias : {"float", "decimal", "numeric", "real"})
+        sqltype::typemap[alias] = realtype;
+
+    // Text types → texttype
+    for (auto &alias : {"varchar", "char", "text", "mediumtext", "longtext", "tinytext", "enum", "set"})
+        sqltype::typemap[alias] = texttype;
+
+    // Date/time types → datetype
+    for (auto &alias : {"datetime", "timestamp", "date", "time", "year"})
+        sqltype::typemap[alias] = datetype;
+
+    // Boolean → booltype
+    sqltype::typemap["boolean"] = booltype;
+    sqltype::typemap["bool"] = booltype;
+
+    // BLOB/binary types → blobtype
+    auto blobtype = sqltype::get("blob");
+    for (auto &alias : {"tinyblob", "mediumblob", "longblob", "binary", "varbinary"})
+        sqltype::typemap[alias] = blobtype;
+
+    // ── Loading tables ──
     string get_table_query = "SELECT DISTINCT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES \
         WHERE TABLE_SCHEMA='" + db + "' AND \
               TABLE_TYPE='BASE TABLE' ORDER BY 1;";
@@ -222,23 +261,21 @@ schema_mysql::schema_mysql(string db, unsigned int port,
         mysql_free_result(result);
     }
 
-    target_dbms = "mysql";
-
-    booltype = sqltype::get("tinyint");
-    inttype = sqltype::get("int");
-    realtype = sqltype::get("double");
-    texttype = sqltype::get("varchar(200)");
-    datetype = sqltype::get("DATETIME");
-    
+    // ── Compound operators ──
     compound_operators.push_back("union distinct");
     compound_operators.push_back("union all");
+    // MySQL 8.0.31+ supports INTERSECT and EXCEPT
+    compound_operators.push_back("intersect");
+    compound_operators.push_back("except");
 
     supported_join_op.push_back("inner");
     supported_join_op.push_back("left outer");
     supported_join_op.push_back("right outer");
     supported_join_op.push_back("cross");
+    supported_join_op.push_back("straight_join");  // MySQL-specific
+    supported_join_op.push_back("natural");         // Sprint 5: NATURAL JOIN
 
-    // bitwise
+    // ── Binary operators ──
     BINOP(&, inttype, inttype, inttype);
     BINOP(>>, inttype, inttype, inttype);
     BINOP(<<, inttype, inttype, inttype);
@@ -267,6 +304,8 @@ schema_mysql::schema_mysql(string db, unsigned int port,
     BINOP(<=>, inttype, inttype, booltype);
     BINOP(<=>, texttype, texttype, booltype);
     BINOP(<=>, realtype, realtype, booltype);
+    BINOP(=, inttype, inttype, booltype);
+    BINOP(=, texttype, texttype, booltype);
     BINOP(=, realtype, realtype, booltype);
 
     // arithmetic
@@ -410,6 +449,86 @@ schema_mysql::schema_mysql(string db, unsigned int port,
     // bit function
     FUNC1(BIT_COUNT, inttype, inttype);
 
+    // MySQL-specific conditional functions (from sql_yacc.yy simple_expr)
+    FUNC3(IF, inttype, booltype, inttype, inttype);
+    FUNC3(IF, realtype, booltype, realtype, realtype);
+    FUNC3(IF, texttype, booltype, texttype, texttype);
+    FUNC2(IFNULL, inttype, inttype, inttype);
+    FUNC2(IFNULL, realtype, realtype, realtype);
+    FUNC2(IFNULL, texttype, texttype, texttype);
+    FUNC1(ISNULL, booltype, inttype);
+    FUNC1(ISNULL, booltype, realtype);
+    FUNC1(ISNULL, booltype, texttype);
+    FUNC2(NULLIF, inttype, inttype, inttype);
+    FUNC2(NULLIF, realtype, realtype, realtype);
+    FUNC2(NULLIF, texttype, texttype, texttype);
+
+    // MySQL string functions (from sql_yacc.yy function_call_*)
+    FUNC3(CONCAT_WS, texttype, texttype, texttype, texttype);
+    FUNC1(MD5, texttype, texttype);
+    FUNC1(SHA1, texttype, texttype);
+    FUNC1(SHA2, texttype, texttype);
+    FUNC2(FIND_IN_SET, inttype, texttype, texttype);
+    FUNC1(CHAR_LENGTH, inttype, texttype);  // duplicate guard via sqltype::get
+    FUNC2(FORMAT, texttype, realtype, inttype);
+    FUNC1(UCASE, texttype, texttype);
+    FUNC1(LCASE, texttype, texttype);
+
+    // ── JSON type and functions (Sprint 2) ──
+    auto jsontype = sqltype::get("json");
+    sqltype::typemap["json"] = jsontype;
+
+    // JSON creation functions
+    FUNC2(JSON_ARRAY, jsontype, texttype, texttype);
+    FUNC2(JSON_OBJECT, jsontype, texttype, texttype);
+    FUNC1(JSON_QUOTE, jsontype, texttype);
+
+    // JSON search functions
+    FUNC2(JSON_EXTRACT, jsontype, jsontype, texttype);
+    FUNC2(JSON_CONTAINS, booltype, jsontype, jsontype);
+    FUNC1(JSON_KEYS, jsontype, jsontype);
+
+    // JSON modification functions
+    FUNC3(JSON_SET, jsontype, jsontype, texttype, texttype);
+    FUNC3(JSON_INSERT, jsontype, jsontype, texttype, texttype);
+    FUNC3(JSON_REPLACE, jsontype, jsontype, texttype, texttype);
+    FUNC2(JSON_REMOVE, jsontype, jsontype, texttype);
+    FUNC2(JSON_MERGE_PATCH, jsontype, jsontype, jsontype);
+
+    // JSON attribute functions
+    FUNC1(JSON_DEPTH, inttype, jsontype);
+    FUNC1(JSON_LENGTH, inttype, jsontype);
+    FUNC1(JSON_TYPE, texttype, jsontype);
+    FUNC1(JSON_UNQUOTE, texttype, jsontype);
+
+    // ── Date/Time functions (Sprint 4) ──
+    FUNC(NOW, datetype);
+    FUNC(CURDATE, datetype);
+    FUNC(CURTIME, texttype);
+    FUNC(SYSDATE, datetype);
+    FUNC(UTC_TIMESTAMP, datetype);
+    FUNC(UTC_DATE, datetype);
+    FUNC(UTC_TIME, texttype);
+    FUNC2(DATE_FORMAT, texttype, datetype, texttype);
+    FUNC2(STR_TO_DATE, datetype, texttype, texttype);
+    FUNC1(LAST_DAY, datetype, datetype);
+    FUNC2(MAKEDATE, datetype, inttype, inttype);
+    FUNC3(MAKETIME, texttype, inttype, inttype, inttype);
+
+    // ── Information functions (Sprint 4) ──
+    FUNC(VERSION, texttype);
+    FUNC(DATABASE, texttype);
+    FUNC(USER, texttype);
+    FUNC(CONNECTION_ID, inttype);
+    FUNC(LAST_INSERT_ID, inttype);
+    FUNC(FOUND_ROWS, inttype);
+    FUNC(ROW_COUNT, inttype);
+
+    // ── Regex string functions (Sprint 4) ──
+    FUNC3(REGEXP_REPLACE, texttype, texttype, texttype, texttype);
+    FUNC2(REGEXP_INSTR, inttype, texttype, texttype);
+    FUNC2(REGEXP_SUBSTR, texttype, texttype, texttype);
+
     // aggregate functions
     AGG1(AVG, realtype, inttype);
     AGG1(AVG, realtype, realtype);
@@ -435,10 +554,20 @@ schema_mysql::schema_mysql(string db, unsigned int port,
     AGG1(VAR_SAMP, realtype, realtype);
     AGG1(VAR_SAMP, realtype, inttype);
 
+    // MySQL-specific aggregates
+    AGG1(ANY_VALUE, inttype, inttype);
+    AGG1(ANY_VALUE, realtype, realtype);
+    AGG1(ANY_VALUE, texttype, texttype);
+    AGG1(GROUP_CONCAT, texttype, texttype);
+    AGG1(GROUP_CONCAT, texttype, inttype);
+    AGG1(JSON_ARRAYAGG, texttype, inttype);
+    AGG1(JSON_ARRAYAGG, texttype, texttype);
+    AGG1(JSON_OBJECTAGG, texttype, texttype);
+
     // ranking window function
     WIN(CUME_DIST, realtype);
     WIN(DENSE_RANK, inttype);
-    // WIN1(NTILE, inttype, inttype);
+    WIN1(NTILE, inttype, inttype);
     WIN(RANK, inttype);
     WIN(ROW_NUMBER, inttype);
     WIN(PERCENT_RANK, realtype);
@@ -450,12 +579,17 @@ schema_mysql::schema_mysql(string db, unsigned int port,
     WIN1(LAST_VALUE, inttype, inttype);
     WIN1(LAST_VALUE, realtype, realtype);
     WIN1(LAST_VALUE, texttype, texttype);
-    // WIN1(LAG, inttype, inttype);
-    // WIN1(LAG, realtype, realtype);
-    // WIN1(LAG, texttype, texttype);
-    // WIN2(LEAD, inttype, inttype, inttype);
-    // WIN2(LEAD, realtype, realtype, inttype);
-    // WIN2(LEAD, texttype, texttype, inttype);
+    WIN1(LAG, inttype, inttype);
+    WIN1(LAG, realtype, realtype);
+    WIN1(LAG, texttype, texttype);
+    WIN1(LEAD, inttype, inttype);
+    WIN1(LEAD, realtype, realtype);
+    WIN1(LEAD, texttype, texttype);
+
+    // Sprint 3: NTH_VALUE (2 parameters: expr, N)
+    WIN2(NTH_VALUE, inttype, inttype, inttype);
+    WIN2(NTH_VALUE, realtype, realtype, inttype);
+    WIN2(NTH_VALUE, texttype, texttype, inttype);
 
     internaltype = sqltype::get("internal");
     arraytype = sqltype::get("ARRAY");
@@ -481,6 +615,65 @@ schema_mysql::schema_mysql(string db, unsigned int port,
         supported_setting["SESSION optimizer_switch"]
             .push_back("'" + flag + "=off'");
     }
+
+    // Set MySQL feature flags
+    features.has_on_duplicate_key = true;
+    features.has_if_function      = true;
+    features.has_group_concat     = true;
+    features.has_returning        = false;  // MySQL does not support RETURNING
+    features.has_upsert           = true;   // via ON DUPLICATE KEY UPDATE
+    features.has_lateral          = true;   // MySQL 8.0.14+
+    features.has_for_update       = true;
+    features.has_full_outer_join  = false;  // MySQL does not support FULL OUTER JOIN
+    features.has_intersect_except = false;  // MySQL 8.0.31+ (version-dependent)
+    features.has_regexp           = true;   // MySQL REGEXP/RLIKE
+    features.has_sounds_like      = true;   // MySQL SOUNDS LIKE
+    features.has_straight_join    = true;   // MySQL STRAIGHT_JOIN
+    features.has_index_hints      = true;   // USE/FORCE/IGNORE INDEX
+    features.has_with_rollup      = true;   // GROUP BY ... WITH ROLLUP
+    features.has_replace          = true;   // REPLACE statement
+    features.has_do_stmt          = true;   // DO statement
+    features.has_explain          = true;   // EXPLAIN / EXPLAIN ANALYZE
+    features.has_select_options   = true;   // SQL_CALC_FOUND_ROWS etc.
+
+    // Sprint 1: Storage engines + table options
+    supported_table_engine.push_back("InnoDB");
+    supported_table_engine.push_back("MyISAM");
+    supported_table_engine.push_back("MEMORY");
+
+    available_table_options.push_back("CHARSET=utf8mb4");
+    available_table_options.push_back("CHARSET=latin1");
+    available_table_options.push_back("ROW_FORMAT=DYNAMIC");
+    available_table_options.push_back("ROW_FORMAT=COMPRESSED");
+
+    // Sprint 1: Enable CAST and INTERVAL
+    features.has_cast             = true;
+    features.has_interval_expr    = true;
+
+    // Sprint 2: Enable MySQL JSON
+    features.has_mysql_json       = true;
+
+    // Sprint 3: Enable window frame (MySQL 8.0+ supports ROWS/RANGE/GROUPS)
+    features.has_window_frame     = true;
+
+    // Sprint 4: Enable SAVEPOINT
+    features.has_savepoint        = true;
+
+    // Partition table support
+    features.has_partition_table    = true;
+    features.has_subpartition       = true;
+    features.has_partition_mgmt     = true;
+    features.has_partition_select   = true;
+
+    // Sprint 4: sql_mode SET parameters
+    supported_setting["SESSION sql_mode"] = {
+        "'ONLY_FULL_GROUP_BY'",
+        "'STRICT_TRANS_TABLES'",
+        "'NO_ZERO_IN_DATE'",
+        "'ERROR_FOR_DIVISION_BY_ZERO'",
+        "'NO_ENGINE_SUBSTITUTION'",
+        "'PIPES_AS_CONCAT'"
+    };
 
     generate_indexes();
 }

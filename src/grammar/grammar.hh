@@ -28,6 +28,8 @@ struct table_or_query_name : table_ref {
     table_or_query_name(prod *p, table *target_table);
     virtual ~table_or_query_name() { }
     named_relation *t;
+    string index_hint;  // MySQL: USE/FORCE/IGNORE INDEX (idx_list)
+    string partition_hint;  // MySQL: PARTITION (p0, p1)
 };
 
 struct target_table : table_ref {
@@ -136,14 +138,20 @@ struct select_list : prod {
 };
 
 struct group_clause: prod {
+    enum group_type { GROUP_SIMPLE, GROUP_GROUPING_SETS, GROUP_CUBE, GROUP_ROLLUP };
+    group_type type;
+    bool with_rollup = false;  // MySQL: GROUP BY ... WITH ROLLUP
     struct scope myscope;
     shared_ptr<struct select_list> modified_select_list;
     vector<shared_ptr<named_relation>> tmp_store; // let new_relation not to be freed so far (for having clause)
     shared_ptr<bool_expr> having_cond_search;
-    group_clause(prod *p, struct scope *s, 
+    group_clause(prod *p, struct scope *s,
             shared_ptr<struct select_list> select_list,
             std::vector<shared_ptr<named_relation> > *from_refs);
     shared_ptr<column_reference> target_ref;
+    // GROUPING SETS / CUBE / ROLLUP members
+    vector<shared_ptr<column_reference>> cube_rollup_cols;
+    vector<vector<shared_ptr<column_reference>>> group_sets;
     virtual void out(std::ostream &out);
     virtual void accept(prod_visitor *v) {
         v->visit(this);
@@ -158,6 +166,7 @@ struct named_window : prod {
     string window_name;
     vector<shared_ptr<value_expr> > partition_by;
     vector< pair<shared_ptr<value_expr>, bool> > order_by;
+    shared_ptr<window_frame> frame;  // optional frame clause
     bool asc;
 
     virtual void accept(prod_visitor *v) {
@@ -166,11 +175,14 @@ struct named_window : prod {
             p->accept(v);
         for (auto p : order_by)
             p.first->accept(v);
+        if (frame)
+            frame->accept(v);
     }
 };
 
 struct query_spec : prod {
     string set_quantifier;
+    string mysql_select_options;  // MySQL: SQL_CALC_FOUND_ROWS, etc.
     shared_ptr<struct from_clause> from_clause;
     shared_ptr<struct select_list> select_list;
     shared_ptr<bool_expr> search;
@@ -239,6 +251,17 @@ struct prepare_stmt : prod {
   }
 };
 
+/// EXECUTE a previously PREPAREd statement
+struct execute_stmt : prod {
+    long prep_id;
+    static long last_prep_id;
+    execute_stmt(prod *p);
+    virtual void out(std::ostream &out) {
+        out << "EXECUTE prep" << prep_id;
+    }
+    virtual void accept(prod_visitor *v) { v->visit(this); }
+};
+
 struct modifying_stmt : prod {
     table *victim;
     struct scope myscope;
@@ -249,6 +272,10 @@ struct modifying_stmt : prod {
 
 struct delete_stmt : modifying_stmt {
     shared_ptr<bool_expr> search;
+    bool has_order_limit = false;
+    string order_col;
+    bool order_asc = true;
+    int limit_num = 0;
     delete_stmt(prod *p, struct scope *s, table *v = 0);
     virtual ~delete_stmt() { }
     virtual void out(ostream &out);
@@ -282,9 +309,55 @@ struct insert_stmt : modifying_stmt {
     virtual void accept(prod_visitor *v) {
         v->visit(this);
         for (auto &value_exprs: value_exprs_vector)
-            for (auto p : value_exprs) 
+            for (auto p : value_exprs)
                 p->accept(v);
     }
+};
+
+/// MySQL REPLACE statement (sql_yacc.yy replace_stmt)
+/// REPLACE INTO table (cols) VALUES (...) — like INSERT but deletes old row on duplicate key
+struct replace_stmt : insert_stmt {
+    replace_stmt(prod *p, struct scope *s, table *victim = 0);
+    virtual ~replace_stmt() { }
+    virtual void out(std::ostream &out);
+};
+
+/// MySQL DO statement (sql_yacc.yy do_stmt)
+/// DO expr1, expr2, ... — evaluates expressions without returning results
+struct do_stmt : prod {
+    vector<shared_ptr<value_expr>> exprs;
+    do_stmt(prod *p, struct scope *s);
+    virtual ~do_stmt() { }
+    virtual void out(std::ostream &out);
+    virtual void accept(prod_visitor *v) {
+        v->visit(this);
+        for (auto &e : exprs) e->accept(v);
+    }
+};
+
+/// MySQL EXPLAIN / EXPLAIN ANALYZE statement (sql_yacc.yy explain_stmt)
+/// EXPLAIN [FORMAT = JSON|TREE|TRADITIONAL] select_stmt
+/// EXPLAIN ANALYZE select_stmt
+struct explain_stmt : prod {
+    string explain_type;  // "EXPLAIN", "EXPLAIN ANALYZE", "EXPLAIN FORMAT=JSON", "EXPLAIN FORMAT=TREE"
+    shared_ptr<prod> inner_stmt;
+    explain_stmt(prod *p, struct scope *s);
+    virtual ~explain_stmt() { }
+    virtual void out(std::ostream &out);
+    virtual void accept(prod_visitor *v) {
+        v->visit(this);
+        inner_stmt->accept(v);
+    }
+};
+
+/// MySQL table maintenance statements (CHECKSUM/CHECK/OPTIMIZE/REPAIR TABLE)
+struct table_maintenance_stmt : prod {
+    string command;  // "CHECKSUM TABLE", "CHECK TABLE", "OPTIMIZE TABLE", "REPAIR TABLE"
+    table *victim;
+    table_maintenance_stmt(prod *p, struct scope *s);
+    virtual ~table_maintenance_stmt() { }
+    virtual void out(std::ostream &out);
+    virtual void accept(prod_visitor *v) { v->visit(this); }
 };
 
 struct set_list : prod {
@@ -309,8 +382,15 @@ struct upsert_stmt : insert_stmt {
   upsert_stmt(prod *p, struct scope *s, table *v = 0);
   virtual void out(std::ostream &out) {
     insert_stmt::out(out);
-    out << " on conflict on constraint " << constraint << " do update ";
-    out << *set_list << " where " << *search;
+    if (scope->schema->features.has_on_duplicate_key) {
+      // MySQL/TiDB/MariaDB/OceanBase syntax
+      out << " on duplicate key update ";
+      out << *set_list;
+    } else {
+      // PostgreSQL syntax
+      out << " on conflict on constraint " << constraint << " do update ";
+      out << *set_list << " where " << *search;
+    }
   }
   virtual void accept(prod_visitor *v) {
     insert_stmt::accept(v);
@@ -323,6 +403,10 @@ struct upsert_stmt : insert_stmt {
 struct update_stmt : modifying_stmt {
     shared_ptr<bool_expr> search;
     shared_ptr<struct set_list> set_list;
+    bool has_order_limit = false;
+    string order_col;
+    bool order_asc = true;
+    int limit_num = 0;
     update_stmt(prod *p, struct scope *s, table *victim = 0);
     virtual ~update_stmt() {  }
     virtual void out(std::ostream &out);
@@ -391,10 +475,43 @@ struct common_table_expression : prod {
     shared_ptr<query_spec> query;
     vector<shared_ptr<named_relation> > refs;
     struct scope myscope;
+    bool is_recursive = false;  // WITH RECURSIVE
     virtual void out(std::ostream &out);
     virtual void accept(prod_visitor *v);
     common_table_expression(prod *parent, struct scope *s, bool txn_mode = false);
 };
+
+/// CTE data-modifying item: INSERT/UPDATE/DELETE + RETURNING inside WITH
+struct cte_dml_item : prod {
+    enum dml_type { CTE_INSERT, CTE_UPDATE, CTE_DELETE };
+    dml_type type;
+    shared_ptr<prod> dml_stmt;
+    table *victim;
+    struct scope myscope;
+    cte_dml_item(prod *p, struct scope *s, table *v);
+    virtual void out(std::ostream &out);
+    virtual void accept(prod_visitor *v);
+};
+
+/// Data-modifying CTE: WITH ... AS (INSERT/UPDATE/DELETE RETURNING *) SELECT ...
+struct data_modifying_cte : prod {
+    vector<shared_ptr<cte_dml_item>> cte_items;
+    vector<shared_ptr<named_relation>> cte_refs;
+    shared_ptr<query_spec> final_query;
+    struct scope myscope;
+    data_modifying_cte(prod *p, struct scope *s, bool txn_mode = false);
+    virtual void out(std::ostream &out);
+    virtual void accept(prod_visitor *v);
+};
+
+/// Partition table metadata for tracking across statements
+struct partition_info {
+    string partition_type;           // "RANGE", "LIST", "HASH", "KEY"
+    vector<string> partition_names;  // ["p0", "p1", ...]
+    string partition_col;            // partition key column name
+    bool has_subpartition = false;
+};
+extern std::map<string, partition_info> table_partitions;
 
 struct create_table_stmt: prod {
     shared_ptr<struct table> created_table;
@@ -410,6 +527,9 @@ struct create_table_stmt: prod {
     bool has_primary_key = false;
     bool has_foreign_key = false;
     int primary_col_id;
+    int partition_col_id = -1;  // column index used for partitioning (-1 = none)
+    int subpartition_col_id = -1;  // column index for sub-partitioning (-1 = none)
+    vector<string> partition_subtable_stmts;  // PG: CREATE TABLE ... PARTITION OF statements
     virtual void out(std::ostream &out);
     create_table_stmt(prod *parent, struct scope *s);
     virtual void accept(prod_visitor *v) {
@@ -435,6 +555,12 @@ struct alter_table_stmt: prod {
     // shared_ptr<struct table> created_table;
     struct scope myscope;
     int stmt_type; // 0: rename table, 1: rename column, 2: add column, 3: drop column
+                   // 4: modify column, 5: add index
+                   // 6: ADD PARTITION, 7: DROP PARTITION, 8: TRUNCATE PARTITION
+                   // 9: COALESCE PARTITION, 10: REORGANIZE PARTITION
+                   // 11: ANALYZE/CHECK/OPTIMIZE/REBUILD/REPAIR PARTITION
+                   // 12: REMOVE PARTITIONING
+                   // 13: ATTACH PARTITION (PG), 14: DETACH PARTITION (PG)
     string stmt_string;
     virtual void out(std::ostream &out);
     alter_table_stmt(prod *parent, struct scope *s);

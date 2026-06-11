@@ -38,6 +38,9 @@ Required: Boost.Regex, libpqxx, PostgreSQL. Optional: libmysqlclient (MySQL/Mari
 
 # Cross mode (cross-database comparison)
 ./build/dbfuzz --mode=cross --mysql-db=testdb --mysql-port=3306
+
+# Smoke mode (high-frequency crash detection, replicates sqlsmith behavior)
+./build/dbfuzz --mode=smoke --verbose --postgres-db=testdb --postgres-port=5432
 ```
 
 `--mode` is required. Provide at least one DBMS connection (`--<dbms>-db` + `--<dbms>-port`).

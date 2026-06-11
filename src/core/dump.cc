@@ -54,7 +54,7 @@ graphml_dumper::~graphml_dumper()
 void ast_logger::generated(prod &query)
 {
   string filename("");
-  filename += "sqlsmith-";
+  filename += "dbfuzz-";
   filename += to_string(queries);
   filename += ".xml";
   ofstream os(filename);

@@ -43,7 +43,7 @@ struct schema_tidb : schema, tidb_connection {
     schema_tidb(string db, unsigned int port);
     virtual void update_schema();
     virtual std::string quote_name(const std::string &id) {
-        return id;
+        return "`" + id + "`";
     }
 };
 

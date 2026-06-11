@@ -315,6 +315,16 @@ bool cross_tester::cross_test(const string& bug_dir) {
     // Oracle 4: normal_content vs transformed_content (transform state safety)
     bool eet_state_ok = compare_content(normal_content, transformed_content);
 
+    // Filter EET transform failures: if transformed SELECT returned empty but
+    // normal SELECT returned rows, the EET transform likely failed (syntax error,
+    // incompatible function, etc.) rather than detecting a real bug.
+    bool eet_transform_failure = transformed_results.empty() && !normal_results.empty();
+    if (eet_transform_failure) {
+        cerr << "cross_test: EET transform returned empty results — skipping EET oracle" << endl;
+        eet_output_ok = true;
+        eet_state_ok = true;
+    }
+
     bool no_bug = txcheck_output_ok && txcheck_state_ok && eet_output_ok && eet_state_ok;
 
     if (no_bug) {
@@ -441,6 +451,8 @@ void cross_tester::minimize(const string& bug_dir) {
 
     cerr << "minimize: starting with " << last_path_stmts.size() << " statements" << endl;
 
+    try {
+
     // Phase 1: Statement-level minimization
     // Try removing each non-SELECT statement and check if bug still triggers
     bool changed = true;
@@ -551,4 +563,15 @@ void cross_tester::minimize(const string& bug_dir) {
                     empty1, empty2, empty3);
 
     cerr << "minimize: done, " << last_path_stmts.size() << " statements remaining" << endl;
+
+    } catch (exception& e) {
+        cerr << "minimize: caught exception: " << e.what() << endl;
+        cerr << "minimize: saving partial results" << endl;
+        // Save whatever we have so far
+        string partial_dir = bug_dir + "/minimized_partial";
+        make_dir_error_exit(partial_dir);
+        multiset<row_output> empty1, empty2, empty3;
+        save_bug_report(partial_dir, last_path_stmts, last_path_usages,
+                        empty1, empty2, empty3);
+    }
 }

@@ -371,6 +371,12 @@ schema_mariadb::schema_mariadb(string db, unsigned int port)
     true_literal = "1 = 1";
     false_literal = "0 <> 0";
 
+    // Set MariaDB feature flags (MySQL-compatible)
+    features.has_on_duplicate_key = true;
+    features.has_if_function      = true;
+    features.has_group_concat     = true;
+    features.has_for_update       = true;
+
     generate_indexes();
 
     // enable "atomic_subselect" use specific tables

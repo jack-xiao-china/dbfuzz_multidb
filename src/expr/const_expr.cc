@@ -47,6 +47,9 @@ const_expr::const_expr(prod *p, sqltype *type_constraint)
     if (type == scope->schema->texttype)
     {
         expr = "'" + random_string(d6() - 1) + "'";
+        // MySQL: 5% chance to add BINARY prefix for binary comparison
+        if (schema::target_dbms == "mysql" && d20() == 1)
+            expr = "binary " + expr;
         return;
     }
 

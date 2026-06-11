@@ -1,6 +1,94 @@
 #include "expr/window_function.hh"
 #include "grammar/grammar.hh"
 
+// ── window_frame implementation ──
+
+window_frame::window_frame(prod *p) : prod(p)
+{
+    // Select frame mode
+    switch (d6()) {
+        case 1: case 2: case 3:
+            mode = ROWS_MODE; break;
+        case 4: case 5:
+            mode = RANGE_MODE; break;
+        default:
+            mode = GROUPS_MODE; break;
+    }
+
+    // Start boundary: UNBOUNDED_PRECEDING / N_PRECEDING / CURRENT_ROW
+    switch (d6()) {
+        case 1:
+            start_bound = UNBOUNDED_PRECEDING;
+            start_offset = 0;
+            break;
+        case 2: case 3:
+            start_bound = N_PRECEDING;
+            start_offset = d100() % 10 + 1;
+            break;
+        default:
+            start_bound = CURRENT_ROW;
+            start_offset = 0;
+            break;
+    }
+
+    // End boundary: CURRENT_ROW / N_FOLLOWING / UNBOUNDED_FOLLOWING
+    switch (d6()) {
+        case 1:
+            end_bound = CURRENT_ROW;
+            end_offset = 0;
+            break;
+        case 2: case 3:
+            end_bound = N_FOLLOWING;
+            end_offset = d100() % 10 + 1;
+            break;
+        default:
+            end_bound = UNBOUNDED_FOLLOWING;
+            end_offset = 0;
+            break;
+    }
+}
+
+void window_frame::out(std::ostream &out)
+{
+    switch (mode) {
+        case ROWS_MODE:   out << " rows"; break;
+        case RANGE_MODE:  out << " range"; break;
+        case GROUPS_MODE: out << " groups"; break;
+    }
+
+    // Shorthand: single CURRENT_ROW boundary
+    if (start_bound == CURRENT_ROW && end_bound == CURRENT_ROW) {
+        out << " current row";
+        return;
+    }
+
+    out << " between ";
+
+    switch (start_bound) {
+        case UNBOUNDED_PRECEDING:
+            out << "unbounded preceding"; break;
+        case N_PRECEDING:
+            out << start_offset << " preceding"; break;
+        case CURRENT_ROW:
+            out << "current row"; break;
+        default: break;
+    }
+
+    out << " and ";
+
+    switch (end_bound) {
+        case CURRENT_ROW:
+            out << "current row"; break;
+        case N_FOLLOWING:
+            out << end_offset << " following"; break;
+        case UNBOUNDED_FOLLOWING:
+            out << "unbounded following"; break;
+        default: break;
+    }
+}
+
+// ── window_function implementation ──
+
 void window_function::out(ostream &out)
 {
     if (is_transformed && !has_print_eq_expr)
@@ -27,6 +115,10 @@ void window_function::out(ostream &out)
             out << ", ";
     }
 
+    // Append frame clause if present
+    if (frame)
+        out << *frame;
+
     out << ")";
 }
 
@@ -51,6 +143,10 @@ window_function::window_function(prod *p, sqltype *type_constraint)
             order_by.push_back(make_pair<>(col, is_asc));
         }
     }
+
+    // Generate frame clause with 50% probability (when DBMS supports it)
+    if (d6() > 3 && scope->schema->features.has_window_frame)
+        frame = make_shared<window_frame>(this);
 }
 
 bool window_function::disabled = false;
@@ -75,4 +171,6 @@ void window_function::accept(prod_visitor *v)
         p->accept(v);
     for (auto p : order_by)
         p.first->accept(v);
+    if (frame)
+        frame->accept(v);
 }

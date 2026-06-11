@@ -1,5 +1,105 @@
 # Release Notes
 
+## v1.0.18 | 2026-06-11
+- 修复 [schema]：PostgreSQL 隔离级别设置 — `dut_libpq` 构造函数和 `reset()`/`reset_to_backup()` 重连后设置 REPEATABLE READ（与 MySQL 一致），消除 G1c 误报
+- 修复 [cross]：EET 变换空结果过滤 — 当变换后 SELECT 返回空而原始 SELECT 非空时，跳过 EET oracle，消除 87.5% 的跨库误报
+- 修复 [txcheck]：执行错误率阈值 — 事务内语句失败率 >50% 时跳过测试用例，防止噪声依赖边产生虚假异常
+- 修复 [txcheck]：stoi 解析异常误报 — 过滤 dependency_analyzer 的 stoi/stol/stod 异常，不再误报为事务 Bug
+- 修复 [cross]：SIGSEGV 信号处理器（v1.0.17）已在上一版本完成
+- 测试 [验证]：全模式 7 项测试通过（Smoke×2 + EET×2 + TxCheck×2 + Cross×1），总误报从 23 降为 0
+
+## v1.0.17 | 2026-06-11
+- 修复 [cross]：Cross 模式 bug 目录创建顺序错误 — `make_dir_error_exit()` 现在在 `cross_test()` 之前调用，确保 `save_bug_report()` 写入时目录已存在
+- 修复 [cross]：Cross 模式最小化 SIGSEGV 容错 — 子进程安装 SIGSEGV 信号处理器，崩溃后优雅退出 (exit code 2)，父进程继续下一轮测试
+- 修复 [cross]：minimize 函数添加 try-catch 异常处理 — 异常时保存部分最小化结果到 `minimized_partial/` 目录
+- 测试 [集成测试]：完成 MySQL 8.4.8 + PostgreSQL 18.3 全模式 7 项集成测试（Smoke/EET/TxCheck/Cross，每项 ≥5 分钟），发现 23 个 Bug（TxCheck MySQL 5 + TxCheck PG 10 + Cross 8）
+
+## v1.0.16 | 2026-06-09
+- 新增 [grammar]：MySQL 分区表建表 — 支持 PARTITION BY RANGE/LIST/HASH/KEY/RANGE COLUMNS/LIST COLUMNS 6 种分区类型
+- 新增 [grammar]：MySQL 二级分区 — RANGE+HASH / RANGE+KEY / LIST+HASH / LIST+KEY 子分区 (30% 概率)
+- 新增 [grammar]：MySQL 分区管理 — ALTER TABLE ADD/DROP/TRUNCATE/COALESCE/REORGANIZE PARTITION + ANALYZE/CHECK/OPTIMIZE/REBUILD/REPAIR + REMOVE PARTITIONING
+- 新增 [grammar]：MySQL 分区选择 — SELECT/UPDATE/DELETE ... PARTITION (p0, p1)
+- 新增 [grammar]：PostgreSQL 分区表建表 — PARTITION BY RANGE/LIST/HASH + CREATE TABLE ... PARTITION OF ... FOR VALUES
+- 新增 [grammar]：PostgreSQL DEFAULT 分区 — 捕获不匹配任何分区范围的行
+- 新增 [grammar]：PostgreSQL 分区管理 — ALTER TABLE ATTACH/DETACH PARTITION
+- 新增 [grammar]：CockroachDB HASH 分区 — PARTITION BY HASH (col) PARTITIONS n (15% 概率)
+- 新增 [grammar]：复合主键输出 — 当分区列与 PK 列不同时自动输出 composite PK
+- 新增 [grammar]：分区表全局追踪 — `table_partitions` map 记录分区类型、分区名、分区列信息
+- 新增 [grammar]：MySQL 分区表禁用外键 — 分区表不生成 FOREIGN KEY (MySQL 不支持)
+- 新增 [schema]：6 个 feature flags — has_partition_table, has_subpartition, has_partition_mgmt, has_partition_select, has_partition_default, has_attach_partition
+
+## v1.0.15 | 2026-06-09
+- 新增 [expr]：CAST/CONVERT 表达式 — `cast_expr` 类, 支持 CAST(expr AS SIGNED/CHAR/DECIMAL/DATE/DATETIME/TIME) 和 MySQL CONVERT(expr, type)
+- 新增 [expr]：INTERVAL 日期算术 — `interval_expr` 类, 生成 `date + INTERVAL n DAY/MONTH/YEAR/HOUR/MINUTE/SECOND`
+- 新增 [expr]：MySQL JSON ->/->> 操作符 — `mysql_json_op` 类, 生成 `col->'$.key'` 和 `col->>'$.key'`
+- 新增 [expr]：MEMBER OF 表达式 — `member_of_expr` 类, 生成 `value MEMBER OF(json_array)`
+- 新增 [expr]：NOT IN 子查询 — `in_query` 扩展 `is_negated` 成员, 30% 概率生成 `NOT IN`
+- 新增 [grammar]：WITH RECURSIVE CTE — `common_table_extension` 扩展 `is_recursive`, 生成递归 CTE (anchor UNION ALL recursive)
+- 新增 [grammar]：SAVEPOINT 语句 — `savepoint_stmt` 类, 生成 SAVEPOINT/RELEASE SAVEPOINT/ROLLBACK TO SAVEPOINT
+- 新增 [grammar]：LOCK/UNLOCK TABLES — `lock_stmt` 类, 生成 LOCK TABLES t READ/WRITE 和 UNLOCK TABLES
+- 新增 [grammar]：ALTER TABLE 扩展 — DROP COLUMN (type 3), MODIFY COLUMN (type 4), ADD INDEX (type 5)
+- 新增 [schema]：MySQL BLOB 类型 — blob/tinblob/mediumblob/longblob/binary/varbinary 别名映射
+- 新增 [schema]：MySQL 存储引擎 — InnoDB/MyISAM/MEMORY 填充到 supported_table_engine
+- 新增 [schema]：MySQL 表选项 — CHARSET=utf8mb4/latin1, ROW_FORMAT=DYNAMIC/COMPRESSED
+- 新增 [schema]：MySQL JSON 类型 + 15 个 JSON 函数 — JSON_ARRAY/OBJECT/EXTRACT/SET/INSERT/REPLACE/REMOVE/MERGE_PATCH/DEPTH/LENGTH/TYPE/UNQUOTE/CONTAINS/KEYS/QUOTE
+- 新增 [schema]：MySQL NTH_VALUE 窗口函数 — 2 参数窗口函数 (expr, N)
+- 新增 [schema]：MySQL 窗口帧启用 — has_window_frame=true, 支持 ROWS/RANGE/GROUPS BETWEEN...AND...
+- 新增 [schema]：MySQL NATURAL JOIN — 自动基于同名列连接
+- 新增 [schema]：MySQL COLLATE 表达式 — 文本列 5% 概率追加 COLLATE utf8mb4_general_ci/bin/unicode_ci
+- 新增 [schema]：MySQL BINARY 前缀 — 文本常量 5% 概率添加 BINARY 前缀
+- 新增 [schema]：MySQL 日期/时间函数 — NOW/CURDATE/CURTIME/SYSDATE/UTC_TIMESTAMP/DATE_FORMAT/STR_TO_DATE/LAST_DAY/MAKEDATE/MAKETIME
+- 新增 [schema]：MySQL 信息函数 — VERSION/DATABASE/USER/CONNECTION_ID/LAST_INSERT_ID/FOUND_ROWS/ROW_COUNT
+- 新增 [schema]：MySQL 正则函数 — REGEXP_REPLACE/REGEXP_INSTR/REGEXP_SUBSTR
+- 新增 [schema]：MySQL sql_mode 参数 — ONLY_FULL_GROUP_BY/STRICT_TRANS_TABLES/NO_ZERO_IN_DATE/ERROR_FOR_DIVISION_BY_ZERO/NO_ENGINE_SUBSTITUTION/PIPES_AS_CONCAT
+- 新增 [schema]：PostgreSQL CAST 支持 — has_cast=true
+- 新增 [flag]：schema.hh 新增 4 个 feature flags — has_cast, has_interval_expr, has_mysql_json, has_savepoint
+
+## v1.0.14 | 2026-06-09
+- 新增 [schema]：MySQL 动态类型别名映射 — BIGINT/MEDIUMINT/SMALLINT/TINYINT→int, FLOAT/DECIMAL/NUMERIC→double, VARCHAR/CHAR/TEXT/MEDIUMTEXT/LONGTEXT→text, DATE/TIME/TIMESTAMP/YEAR→DATETIME, BOOLEAN→tinyint
+- 新增 [schema]：MySQL 操作符补全 — 补齐 `=` 比较操作符 (int/real/text)，补齐 INTERSECT/EXCEPT 复合运算符 (MySQL 8.0.31+)
+- 新增 [schema]：MySQL 函数扩展 — IF/IFNULL/ISNULL/NULLIF 条件函数, CONCAT_WS/MD5/SHA1/SHA2/FIND_IN_SET/FORMAT/UCASE/LCASE 字符串函数, 函数总数 100→129
+- 新增 [schema]：MySQL 聚合扩展 — ANY_VALUE/GROUP_CONCAT/JSON_ARRAYAGG/JSON_OBJECTAGG, 聚合总数 23→31
+- 新增 [schema]：MySQL 窗口函数启用 — NTILE, LAG, LEAD 窗口函数
+- 新增 [grammar]：MySQL REPLACE 语句 — `replace_stmt` 类, 加入 statement_factory (choice==17, has_replace)
+- 新增 [grammar]：MySQL EXPLAIN 语句 — `explain_stmt` 类, 支持 EXPLAIN/EXPLAIN ANALYZE/EXPLAIN FORMAT=JSON|TREE|TRADITIONAL
+- 新增 [grammar]：MySQL 表维护语句 — `table_maintenance_stmt` 类 (CHECKSUM/CHECK/OPTIMIZE/REPAIR TABLE)
+- 新增 [grammar]：MySQL STRAIGHT_JOIN — joined_table 支持 straight_join 类型, supported_join_op 新增
+- 新增 [grammar]：MySQL Index Hints — table_or_query_name 支持 USE/FORCE/IGNORE INDEX (1/9 概率)
+- 新增 [grammar]：MySQL SELECT 选项 — query_spec 支持 SQL_CALC_FOUND_ROWS/SQL_NO_CACHE/HIGH_PRIORITY 等
+- 新增 [grammar]：MySQL GROUP BY WITH ROLLUP — group_clause 支持 WITH ROLLUP 后缀 (1/6 概率)
+- 新增 [grammar]：MySQL UPDATE/DELETE ORDER BY + LIMIT — update_stmt 和 delete_stmt 支持 ORDER BY + LIMIT (1/6 概率)
+- 新增 [expr]：MySQL REGEXP/RLIKE 表达式 — `regexp_expr` 类 (含 NOT REGEXP), 由 has_regexp flag 控制
+- 新增 [expr]：MySQL SOUNDS LIKE 表达式 — `sounds_like_expr` 类, 由 has_sounds_like flag 控制
+- 新增 [schema]：MySQL feature flags 扩展 — 新增 has_regexp/has_sounds_like/has_straight_join/has_index_hints/has_with_rollup/has_replace/has_do_stmt/has_explain/has_select_options (共 9 个新 flag)
+- 新增 [docs]：`docs/dbfuzz-features-and-mysql-vs-postgres-analysis.md` — dbfuzz 功能全景与 MySQL/PG 差异分析
+- 优化 [schema]：MySQL 类型系统从 5 种扩展到 20+ 种类型别名, 大幅提升列类型兼容性
+
+## v1.0.13 | 2026-06-09
+- 新增 [smoke]：`--rng-state` / `--rng-state-out` — mt19937_64 RNG 状态序列化/反序列化，支持精确复现查询序列和断点续测
+- 新增 [smoke]：`--dump-all-graphs` 接线 — 启用 `ast_logger` 将每个 AST dump 为 GraphML XML 文件（`dbfuzz-N.xml`）
+- 新增 [schema]：PG14+ `anycompatible*` 伪类型族 — `anycompatible`、`anycompatiblearray`、`anycompatiblenonarray`、`anycompatiblerange`、`anycompatiblemultirange`、`anymultirange` 类型一致性匹配
+- 新增 [core]：`known.txt` / `known_re.txt` 已知错误过滤机制 — 支持精确子串匹配和正则匹配，已过滤错误仅传递给 impedance_feedback（语法适应），不输出到 cerr_logger
+- 新增 [smoke]：`SET application_name TO 'dbfuzz::dut'` — 在 pg_stat_activity 中可识别 fuzzing 连接
+- 新增 [docs]：`docs/sqlsmith-vs-dbfuzz-deep-analysis.md` — sqlsmith 与 dbfuzz 深度对比分析报告
+- 优化 [core]：GraphML dump 文件名前缀从 `sqlsmith-` 改为 `dbfuzz-`
+
+## v1.0.12 | 2026-06-09
+- 新增 [smoke]：Smoke 测试模式 — 严格复刻 sqlsmith 原生运行时行为，`ROLLBACK; BEGIN; stmt; ROLLBACK;` 事务包裹、`statement_timeout=1s`、双层连接恢复循环、阻抗反馈黑名单机制
+- 新增 [smoke]：CLI 选项对齐 sqlsmith — `--verbose`、`--max-queries`、`--dry-run`、`--dump-all-queries`、`--dump-all-graphs`、`--exclude-catalog`
+- 新增 [core]：`db_feature_flags` 机制 — schema 类新增 feature flags 结构体，精确控制各 DBMS 支持的 SQL 特性，避免在不支持的 DBMS 上生成不兼容语法
+- 新增 [grammar]：PG 窗口帧子句 — `window_frame` 结构体支持 ROWS/RANGE/GROUPS BETWEEN ... AND ... 帧边界，50% 概率生成
+- 新增 [grammar]：PG 数据修改 CTE — `data_modifying_cte` + `cte_dml_item`，支持 `WITH ... AS (DELETE/UPDATE/INSERT ... RETURNING *) SELECT ...`
+- 新增 [grammar]：PG 量化比较 — `quantified_comparison` 支持 `expr > ALL (SELECT ...)`, `= ANY`, `<= SOME` 语法
+- 新增 [grammar]：PG GROUPING SETS/CUBE/ROLLUP — `group_clause` 扩展支持多维分组语法
+- 新增 [grammar]：PG JSON/JSONB 运算符 — `json_extract_op` 支持 `->`, `->>`, `#>`, `#>>` 提取运算符
+- 新增 [grammar]：PG 数组构造 — `array_constructor` 支持 `ARRAY[expr1, expr2, ...]` 语法
+- 新增 [grammar]：PG ROW 构造器 — `row_constructor` 支持 `ROW(expr1, expr2, ...)` 语法
+- 新增 [grammar]：PG EXECUTE 语句 — `execute_stmt` 支持执行 PREPARE 预编译的语句
+- 新增 [grammar]：MySQL ON DUPLICATE KEY UPDATE — `upsert_stmt` 根据 feature flags 自动生成 MySQL/PG 对应的 UPSERT 语法
+- 优化 [schema]：MySQL 反引号标识符引用 — `quote_name()` 返回 `` `identifier` `` 格式，TiDB/MariaDB/OceanBase 同步更新
+- 优化 [schema]：所有 DBMS 驱动设置 feature flags — PostgreSQL、MySQL、TiDB、MariaDB、OceanBase、CockroachDB、YugabyteDB
+- 修复 [expr]：`value_expr::factory` 中新增表达式类型的类型约束检查，避免 case_expr/funcall 类型断言失败
+
 ## v1.0.11 | 2026-06-09
 - 新增 [schema]：GaussDB 驱动 — 支持 GaussDB-M（MySQL 兼容模式）和 GaussDB-A（Oracle 兼容模式），基于 PostgreSQL 协议（libpq），统一 gaussdb.hh/cc 实现
 - 新增 [schema]：GaussDB `reset()` — 使用 PL/pgSQL 批量 DROP TABLE/SEQUENCE/INDEX CASCADE 清理 public schema（GaussDB 不支持 `DROP DATABASE WITH (FORCE)` 且 `DROP DATABASE` 等价于 `DROP SCHEMA`）

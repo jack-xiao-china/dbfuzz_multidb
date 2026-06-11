@@ -462,6 +462,13 @@ schema_ob::schema_ob(string db, unsigned int port, string host)
     true_literal = "true";
     false_literal = "false";
 
+    // Set OceanBase feature flags (MySQL-compatible)
+    features.has_on_duplicate_key = true;
+    features.has_if_function      = true;
+    features.has_group_concat     = true;
+    features.has_lateral          = true;
+    features.has_for_update       = true;
+
     generate_indexes();
 }
 

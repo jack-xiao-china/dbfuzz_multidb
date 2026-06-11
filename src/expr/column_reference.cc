@@ -52,6 +52,14 @@ column_reference::column_reference(prod *p, sqltype *type_constraint,
         agg_func->out(s);
         reference = s.str();
     }
+
+    // MySQL: 5% chance to add COLLATE for text columns
+    if (schema::target_dbms == "mysql" && type == scope->schema->texttype && d20() == 1) {
+        static const char *collations[] = {
+            "utf8mb4_general_ci", "utf8mb4_bin", "utf8mb4_unicode_ci", "latin1_general_ci"
+        };
+        collation = string(" collate ") + collations[smith::rng() % 4];
+    }
 }
 
 column_reference::column_reference(prod *p, sqltype *column_type,
@@ -75,5 +83,5 @@ void column_reference::out(ostream &o)
         out_eq_value_expr(o);
         return;
     }
-    o << reference;
+    o << reference << collation;
 }

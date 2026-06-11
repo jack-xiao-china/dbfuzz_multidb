@@ -547,6 +547,21 @@ schema_yugabyte::schema_yugabyte(string db, unsigned int port, string host, bool
         }
     }
 
+    // Set YugabyteDB feature flags (PG-compatible)
+    features.has_window_frame    = true;
+    features.has_data_mod_cte    = true;
+    features.has_quantified_cmp  = true;
+    features.has_grouping_sets   = true;
+    features.has_json_jsonb      = true;
+    features.has_array_ops       = true;
+    features.has_upsert          = true;
+    features.has_returning       = true;
+    features.has_tablesample     = true;
+    features.has_lateral         = true;
+    features.has_for_update      = true;
+    features.has_full_outer_join = true;
+    features.has_intersect_except = true;
+
     generate_indexes();
 }
 

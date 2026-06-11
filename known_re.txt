@@ -1,0 +1,31 @@
+# known_re.txt — Regex patterns for boring/expected errors
+# Lines starting with # are comments. Empty lines are ignored.
+# Each line is a regex pattern matched against error messages.
+
+# PostgreSQL: type mismatch errors (very common in random SQL)
+cannot apply .* to types
+operator .* is not unique
+could not identify .* operator
+no operator matches the given name and argument types
+function .* does not exist
+
+# PostgreSQL: relation/permission errors
+relation ".*" does not exist
+permission denied for (table|sequence|function|schema|database) ".*"
+
+# PostgreSQL: constraint violations (common in random DML)
+violates check constraint ".*"
+violates exclusion constraint ".*"
+conflicting key value violates exclusion constraint
+
+# PostgreSQL: query structure errors
+subquery in FROM must have an alias
+each UNION query must have the same number of columns
+each INTERSECT query must have the same number of columns
+each EXCEPT query must have the same number of columns
+
+# MySQL: common structural errors
+You have an error in your SQL syntax
+Unknown column '.*' in '.*'
+Table '.*' doesn't exist
+Column '.*' cannot be null

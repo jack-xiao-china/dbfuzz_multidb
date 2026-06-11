@@ -8,6 +8,7 @@ dbms_info::dbms_info(map<string,string>& options)
         string m = options["mode"];
         if (m == "txcheck")      mode = MODE_TXCHECK;
         else if (m == "cross")   mode = MODE_CROSS;
+        else if (m == "smoke")   mode = MODE_SMOKE;
         else                     mode = MODE_EET;
     } else {
         mode = MODE_EET;

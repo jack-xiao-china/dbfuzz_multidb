@@ -28,6 +28,8 @@ found_bugs/
 mysql_bk.sql
 db_setup.sql
 wkey.txt
+test_logs/
+test_*.log
 
 # OS
 .DS_Store

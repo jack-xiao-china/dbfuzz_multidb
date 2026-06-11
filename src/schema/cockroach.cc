@@ -605,6 +605,16 @@ schema_cockroach::schema_cockroach(string db, unsigned int port, string host, bo
         }
     }
 
+    // Set CockroachDB feature flags (PG-compatible)
+    features.has_window_frame    = true;
+    features.has_quantified_cmp  = true;
+    features.has_grouping_sets   = true;
+    features.has_upsert          = true;
+    features.has_returning       = true;
+    features.has_lateral         = true;
+    features.has_for_update      = true;
+    features.has_full_outer_join = true;
+
     generate_indexes();
 }
 

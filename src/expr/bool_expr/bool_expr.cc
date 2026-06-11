@@ -27,6 +27,14 @@ shared_ptr<bool_expr> bool_expr::factory(prod *p)
             return make_shared<in_query>(p);
         else if (choose <= 40)
             return make_shared<comp_subquery>(p);
+        else if (choose == 41 && p->scope->schema->features.has_quantified_cmp)
+            return make_shared<quantified_comparison>(p, p->scope);
+        else if (choose == 42 && p->scope->schema->features.has_regexp)
+            return make_shared<regexp_expr>(p, p->scope);
+        else if (choose == 43 && p->scope->schema->features.has_sounds_like)
+            return make_shared<sounds_like_expr>(p, p->scope);
+        else if (choose == 44 && p->scope->schema->features.has_mysql_json)
+            return make_shared<member_of_expr>(p);
         else
             return make_shared<exists_predicate>(p);
         //     return make_shared<distinct_pred>(q);

@@ -25,7 +25,7 @@ struct schema_ob : schema, ob_connection {
     schema_ob(string db, unsigned int port, string host);
     virtual void update_schema();
     virtual std::string quote_name(const std::string &id) {
-        return id;
+        return "`" + id + "`";
     }
 };
 

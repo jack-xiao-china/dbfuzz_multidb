@@ -9,6 +9,9 @@ in_query::in_query(prod *p) : bool_expr(p), myscope(scope)
     myscope.tables = scope->tables;
     scope = &myscope;
 
+    // 30% chance to generate NOT IN instead of IN
+    is_negated = (d6() > 4);
+
     lhs = value_expr::factory(this);
 
     auto tmp_in_state = in_in_clause;
@@ -50,7 +53,7 @@ void in_query::out(ostream &out)
     if (is_transformed && schema::target_dbms != "clickhouse")
         out << *eq_expr;
     else
-        out << "(" << *lhs << ") in (" << *in_subquery << ")";
+        out << "(" << *lhs << ") " << (is_negated ? "not in" : "in") << " (" << *in_subquery << ")";
 }
 
 void in_query::accept(prod_visitor *v)

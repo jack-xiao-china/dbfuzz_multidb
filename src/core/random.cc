@@ -1,4 +1,5 @@
 #include "core/random.hh"
+#include <sstream>
 
 namespace smith {
   mt19937_64 rng;
@@ -96,6 +97,17 @@ string random_string(int char_num) {
         char_num--;
     }
     return str;
+}
+
+string rng_state_serialize() {
+    ostringstream os;
+    os << smith::rng;
+    return os.str();
+}
+
+void rng_state_deserialize(const string &state) {
+    istringstream is(state);
+    is >> smith::rng;
 }
 
 file_random_machine::file_random_machine(string s)

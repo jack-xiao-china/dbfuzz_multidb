@@ -343,6 +343,13 @@ schema_tidb::schema_tidb(string db, unsigned int port)
     true_literal = "true";
     false_literal = "false";
 
+    // Set TiDB feature flags (MySQL-compatible)
+    features.has_on_duplicate_key = true;
+    features.has_if_function      = true;
+    features.has_group_concat     = true;
+    features.has_lateral          = true;
+    features.has_for_update       = true;
+
     generate_indexes();
 }
 

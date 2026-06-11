@@ -159,6 +159,58 @@ struct schema {
     map<string, vector<string>> supported_setting;
     static bool require_pkey_wkey;
 
+    /// Feature flags for DBMS-specific SQL generation control
+    struct db_feature_flags {
+        // PostgreSQL features
+        bool has_window_frame    = false;
+        bool has_data_mod_cte    = false;
+        bool has_quantified_cmp  = false;
+        bool has_grouping_sets   = false;
+        bool has_json_jsonb      = false;
+        bool has_array_ops       = false;
+        bool has_merge           = false;
+        bool has_upsert          = false;
+        bool has_returning       = false;
+        bool has_tablesample     = false;
+        bool has_lateral         = false;
+        bool has_for_update      = false;
+
+        // MySQL features
+        bool has_on_duplicate_key = false;
+        bool has_if_function      = false;
+        bool has_group_concat     = false;
+
+        // Common
+        bool has_full_outer_join  = false;
+        bool has_intersect_except = false;
+
+        // MySQL-specific
+        bool has_regexp           = false;
+        bool has_sounds_like      = false;
+        bool has_straight_join    = false;
+        bool has_index_hints      = false;
+        bool has_with_rollup      = false;
+        bool has_replace          = false;
+        bool has_do_stmt          = false;
+        bool has_explain          = false;
+        bool has_select_options   = false;
+
+        // Common expressions
+        bool has_cast             = false;   // CAST / CONVERT
+        bool has_interval_expr    = false;   // date + INTERVAL n DAY
+        bool has_mysql_json       = false;   // MySQL JSON ->/->>
+        bool has_savepoint        = false;   // SAVEPOINT / RELEASE / ROLLBACK TO
+
+        // Partition table support
+        bool has_partition_table    = false;  // CREATE TABLE ... PARTITION BY
+        bool has_subpartition       = false;  // SUBPARTITION BY HASH/KEY
+        bool has_partition_mgmt     = false;  // ALTER TABLE ADD/DROP/TRUNCATE PARTITION
+        bool has_partition_select   = false;  // SELECT ... PARTITION (p0)
+        bool has_partition_default  = false;  // DEFAULT partition (PG)
+        bool has_attach_partition   = false;  // ATTACH/DETACH PARTITION (PG)
+    };
+    db_feature_flags features;
+
     static string get_version_key_name() {
         return require_pkey_wkey ? WKEY_IDENT : VKEY_IDENT;
     }

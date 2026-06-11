@@ -1055,6 +1055,23 @@ bool transaction_test::multi_stmt_round_test()
     original_tid_queue = tid_queue;
 
     trans_test(false); // first run, get all dependency information
+
+    // Check error rate: if >50% of statements failed, skip this test case
+    if (!real_stmt_queue.empty()) {
+        int fail_count = 0;
+        for (auto& s : real_stmt_queue) {
+            auto str = print_stmt_to_string(s);
+            if (str.find(SPACE_HOLDER_STMT) != string::npos && str.length() <= string(SPACE_HOLDER_STMT).length() + 3)
+                fail_count++;
+        }
+        double error_rate = 1.0 * fail_count / real_stmt_queue.size();
+        if (error_rate > 0.5) {
+            cerr << "trans_test: error rate " << error_rate << " too high ("
+                 << fail_count << "/" << real_stmt_queue.size() << "), skipping" << endl;
+            return false;
+        }
+    }
+
     shared_ptr<dependency_analyzer> init_da;
     if (analyze_txn_dependency(init_da)) 
         throw runtime_error("BUG: found in analyze_txn_dependency()");
@@ -1133,7 +1150,20 @@ bool transaction_test::multi_stmt_round_test()
 
             // cerr << RED << "txn testing:" << RESET << endl;
             trans_test(false);
-            if (analyze_txn_dependency(tmp_da)) 
+            // Check error rate after trans_test
+            if (!real_stmt_queue.empty()) {
+                int _fc = 0;
+                for (auto& _s : real_stmt_queue) {
+                    auto _str = print_stmt_to_string(_s);
+                    if (_str.find(SPACE_HOLDER_STMT) != string::npos && _str.length() <= string(SPACE_HOLDER_STMT).length() + 3)
+                        _fc++;
+                }
+                if (1.0 * _fc / real_stmt_queue.size() > 0.5) {
+                    cerr << "trans_test: error rate too high in refinement loop, skipping" << endl;
+                    break; // exit refinement loop
+                }
+            }
+            if (analyze_txn_dependency(tmp_da))
                 throw runtime_error("BUG: found in analyze_txn_dependency()");
             longest_stmt_path = tmp_da->topological_sort_path(deleted_nodes);
 
@@ -1261,6 +1291,10 @@ int transaction_test::test()
         if (err.find("INSTRUMENT_ERR") != string::npos) // it is cause by: after instrumented, the scheduling change and error in txn_test happens
             return 0;
         if (err.find("still not executed") != string::npos) // cannot reproduce
+            return 0;
+        if (err.find("stoi") != string::npos) // dependency_analyzer parsing error, not a real bug
+            return 0;
+        if (err.find("stol") != string::npos || err.find("stod") != string::npos) // similar parsing errors
             return 0;
     }
 

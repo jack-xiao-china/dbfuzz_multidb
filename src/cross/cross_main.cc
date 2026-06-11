@@ -73,6 +73,12 @@ void cross_run(dbms_info &d_info, map<string, string> &options) {
             // ---- Child process ----
             close(pipefd[0]); // close unused read end
 
+            // Install SIGSEGV handler so minimize crashes don't kill the child
+            signal(SIGSEGV, [](int) {
+                cerr << "minimize: SIGSEGV caught — bug report already saved, exiting gracefully" << endl;
+                _exit(2);  // distinct code: not EXIT_FAILURE (bug), not EXIT_SUCCESS (clean)
+            });
+
             random_device rd;
             auto rand_seed = rd();
             cerr << "random seed: " << rand_seed << endl;
@@ -113,15 +119,19 @@ void cross_run(dbms_info &d_info, map<string, string> &options) {
                     string bug_dir = "found_bugs/cross_bug_r" + to_string(round)
                                      + "_t" + to_string(i) + "/";
 
+                    // Create directory BEFORE cross_test (save_bug_report needs it)
+                    make_dir_error_exit(bug_dir);
+
                     if (ct.cross_test(bug_dir)) {
                         cerr << RED << "CROSS BUG FOUND in round " << round
                              << ", test " << i << RESET << endl;
 
-                        // Ensure bug directory exists
-                        make_dir_error_exit(bug_dir);
-
-                        // Minimize the test case
-                        ct.minimize(bug_dir);
+                        // Minimize the test case (may crash — catch and continue)
+                        try {
+                            ct.minimize(bug_dir);
+                        } catch (exception& e) {
+                            cerr << "minimize threw exception: " << e.what() << endl;
+                        }
 
                         exit(EXIT_FAILURE); // signal bug to parent
                     }
@@ -152,6 +162,11 @@ void cross_run(dbms_info &d_info, map<string, string> &options) {
         if (WIFEXITED(status) && WEXITSTATUS(status) == EXIT_FAILURE) {
             cerr << RED << "cross_run: child reported a bug, aborting" << RESET << endl;
             abort();
+        }
+
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 2) {
+            cerr << YELLOW << "cross_run: child crashed during minimize (bug report already saved), continuing" << RESET << endl;
+            // Bug was already saved; continue to next round
         }
 
         if (WIFSIGNALED(status)) {

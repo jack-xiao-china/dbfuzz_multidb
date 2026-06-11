@@ -29,6 +29,11 @@ int d6(), d9(), d12(), d20(), d42(), d100();
 string random_string(int char_num);
 int dx(int x);
 
+/// Serialize RNG state to string for later restoration (--rng-state)
+string rng_state_serialize();
+/// Restore RNG state from serialized string
+void rng_state_deserialize(const string &state);
+
 struct file_random_machine {
     string filename;
     char * buffer;

@@ -29,6 +29,25 @@ shared_ptr<value_expr> value_expr::factory(prod *p, sqltype *type_constraint,
                 return make_shared<case_expr>(p, type_constraint);
             if (choice <= 21)
                 return make_shared<binop_expr>(p, type_constraint);
+            // PG JSON extract operators (only when text type is acceptable)
+            if (choice == 22 && p->scope->schema->features.has_json_jsonb
+                && (!type_constraint || type_constraint == p->scope->schema->texttype))
+                return make_shared<json_extract_op>(p, type_constraint);
+            // PG ARRAY constructor (only when no specific type constraint)
+            if (choice == 23 && p->scope->schema->features.has_array_ops
+                && type_constraint == NULL)
+                return make_shared<array_constructor>(p, type_constraint);
+            // CAST / CONVERT expression
+            if (choice == 24 && p->scope->schema->features.has_cast)
+                return make_shared<cast_expr>(p, type_constraint);
+            // INTERVAL date arithmetic (result is datetype)
+            if (choice == 25 && p->scope->schema->features.has_interval_expr
+                && (!type_constraint || type_constraint == p->scope->schema->datetype))
+                return make_shared<interval_expr>(p, type_constraint);
+            // MySQL JSON ->/->> operators
+            if (choice == 26 && p->scope->schema->features.has_mysql_json
+                && (!type_constraint || type_constraint == p->scope->schema->texttype))
+                return make_shared<mysql_json_op>(p, type_constraint);
         }
         auto choice = d42();
         if (in_in_clause == 0 && choice <= 12)

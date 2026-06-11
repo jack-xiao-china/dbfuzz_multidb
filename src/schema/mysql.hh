@@ -35,7 +35,7 @@ struct schema_mysql : schema, mysql_connection {
                  string pass = "");
     virtual void update_schema();
     virtual std::string quote_name(const std::string &id) {
-        return id;
+        return "`" + id + "`";
     }
 };
 

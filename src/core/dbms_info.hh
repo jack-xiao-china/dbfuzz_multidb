@@ -11,7 +11,8 @@ using namespace std;
 enum test_mode {
     MODE_TXCHECK,
     MODE_EET,
-    MODE_CROSS
+    MODE_CROSS,
+    MODE_SMOKE
 };
 
 struct dbms_info {

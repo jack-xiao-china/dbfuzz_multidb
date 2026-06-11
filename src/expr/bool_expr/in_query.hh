@@ -9,6 +9,7 @@ struct in_query : bool_expr
     shared_ptr<value_expr> lhs;
     shared_ptr<prod> in_subquery;
     shared_ptr<case_expr> eq_expr;
+    bool is_negated = false;  // NOT IN when true
     in_query(prod *p);
     in_query(prod *p, shared_ptr<value_expr> expr, shared_ptr<prod> subquery);
     virtual ~in_query(){};

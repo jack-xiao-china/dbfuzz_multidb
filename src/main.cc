@@ -11,11 +11,13 @@ using namespace std;
 #define MODE_EET     1
 #define MODE_TXCHECK 2
 #define MODE_CROSS   3
+#define MODE_SMOKE   4
 
 // Forward declarations for mode-specific run functions
 extern void eet_run(dbms_info& d_info, map<string, string>& options);
 extern void txcheck_run(dbms_info& d_info, map<string, string>& options);
 extern void cross_run(dbms_info& d_info, map<string, string>& options);
+extern void smoke_run(dbms_info& d_info, map<string, string>& options);
 
 static void print_usage() {
     cerr <<
@@ -25,6 +27,7 @@ static void print_usage() {
     "    --mode=txcheck     Transaction bug detection (TxCheck)" << endl <<
     "    --mode=eet         Logic bug detection (EET/QCN)" << endl <<
     "    --mode=cross       Cross-database testing" << endl <<
+    "    --mode=smoke       High-frequency random SQL + crash detection" << endl <<
     endl <<
     "DBMS connections (provide at least one):" << endl <<
     "    --mysql-db=str        MySQL database name" << endl <<
@@ -67,6 +70,7 @@ static void print_usage() {
     endl <<
     "General options:" << endl <<
     "    --seed=int            Random seed (default: random)" << endl <<
+    "    --rng-state=str       Restore RNG state from previous run (for reproduction)" << endl <<
     "    --cpu-affinity=int    Set CPU affinity to specific core" << endl <<
     "    --ignore-crash        Ignore crash bugs, continue testing" << endl <<
     endl <<
@@ -82,6 +86,15 @@ static void print_usage() {
     "    --db-test-num=int     Number of QCN tests per database" << endl <<
     "    --db-table-num=int    Number of tables per generated database" << endl <<
     endl <<
+    "Smoke options:" << endl <<
+    "    --max-queries=int     Maximum number of queries (default: unlimited)" << endl <<
+    "    --verbose             Print progress to stderr" << endl <<
+    "    --dump-all-queries    Print each generated SQL statement" << endl <<
+    "    --dump-all-graphs     Dump AST as GraphML files" << endl <<
+    "    --rng-state-out=file  Save RNG state to file on completion" << endl <<
+    "    --dry-run             Generate SQL without executing" << endl <<
+    "    --exclude-catalog     Skip pg_catalog/information_schema tables" << endl <<
+    endl <<
     "    --help                Print this help and exit" << endl;
 }
 
@@ -91,7 +104,7 @@ int main(int argc, char *argv[])
     map<string, string> options;
     regex optregex("--(\
 help|mode|\
-seed|cpu-affinity|ignore-crash|\
+seed|rng-state|cpu-affinity|ignore-crash|\
 mysql-db|mysql-port|mysql-host|mysql-user|mysql-pass|\
 mariadb-db|mariadb-port|\
 postgres-db|postgres-port|postgres-path|postgres-host|postgres-user|postgres-pass|\
@@ -105,7 +118,8 @@ gaussdb-m-db|gaussdb-m-port|gaussdb-m-host|gaussdb-m-user|gaussdb-m-pass|\
 gaussdb-a-db|gaussdb-a-port|gaussdb-a-host|gaussdb-a-user|gaussdb-a-pass|\
 output-or-affect-num|\
 reproduce-sql|reproduce-tid|reproduce-usage|reproduce-backup|min|\
-db-test-num|db-table-num)(?:=((?:.|\n)*))?");
+db-test-num|db-table-num|\
+max-queries|verbose|dump-all-queries|dump-all-graphs|dry-run|exclude-catalog|rng-state-out)(?:=((?:.|\n)*))?");
 
     for (char **opt = argv + 1; opt < argv + argc; opt++) {
         smatch match;
@@ -126,7 +140,7 @@ db-test-num|db-table-num)(?:=((?:.|\n)*))?");
 
     // Validate --mode (required)
     if (!options.count("mode")) {
-        cerr << "Error: --mode is required (txcheck|eet|cross)" << endl << endl;
+        cerr << "Error: --mode is required (txcheck|eet|cross|smoke)" << endl << endl;
         print_usage();
         return 1;
     }
@@ -139,8 +153,10 @@ db-test-num|db-table-num)(?:=((?:.|\n)*))?");
         mode = MODE_TXCHECK;
     else if (mode_str == "cross")
         mode = MODE_CROSS;
+    else if (mode_str == "smoke")
+        mode = MODE_SMOKE;
     else {
-        cerr << "Error: unknown mode '" << mode_str << "' (expected txcheck|eet|cross)" << endl;
+        cerr << "Error: unknown mode '" << mode_str << "' (expected txcheck|eet|cross|smoke)" << endl;
         return 1;
     }
 
@@ -155,6 +171,8 @@ db-test-num|db-table-num)(?:=((?:.|\n)*))?");
     cerr << "Test host: " << d_info.host_addr << endl;
     if (options.count("seed"))
         cerr << "Seed: " << options["seed"] << endl;
+    if (options.count("rng-state"))
+        cerr << "RNG state: restored from --rng-state" << endl;
     cerr << "----------------------------------" << endl;
 
     // Dispatch to mode-specific entry point
@@ -167,6 +185,9 @@ db-test-num|db-table-num)(?:=((?:.|\n)*))?");
         break;
     case MODE_CROSS:
         cross_run(d_info, options);
+        break;
+    case MODE_SMOKE:
+        smoke_run(d_info, options);
         break;
     }
 

@@ -117,6 +117,20 @@ bool pg_type::consistent(sqltype *rvalue)
                 return true;
             } else if (name == "void") {
                 return this == t;
+            // PG14+ anycompatible* pseudo-type family
+            } else if (name == "anycompatible") {
+                return t->typtype_ != 'p';
+            } else if (name == "anycompatiblearray") {
+                return t->typelem_ != InvalidOid;
+            } else if (name == "anycompatiblenonarray") {
+                return t->typelem_ == InvalidOid && t->typtype_ != 'p';
+            } else if (name == "anycompatiblerange") {
+                return t->typtype_ == 'r';
+            } else if (name == "anycompatiblemultirange") {
+                return t->typtype_ == 'm';
+            // PG14+ multirange
+            } else if (name == "anymultirange") {
+                return t->typtype_ == 'm';
             } else {
                 return false;
             }
@@ -590,6 +604,29 @@ schema_pqxx::schema_pqxx(string db, unsigned int port, string path, bool no_cata
         }
     }
 
+    // Set PostgreSQL feature flags
+    features.has_window_frame    = true;
+    features.has_data_mod_cte    = true;
+    features.has_quantified_cmp  = true;
+    features.has_grouping_sets   = true;
+    features.has_json_jsonb      = true;
+    features.has_array_ops       = true;
+    features.has_merge           = true;  // PG 15+
+    features.has_upsert          = true;  // PG 9.5+
+    features.has_returning       = true;
+    features.has_tablesample     = true;  // PG 9.5+
+    features.has_lateral         = true;
+    features.has_for_update      = true;
+    features.has_full_outer_join = true;
+    features.has_intersect_except = true;
+    features.has_cast             = true;   // CAST is standard SQL
+
+    // Partition table support
+    features.has_partition_table    = true;
+    features.has_subpartition       = true;
+    features.has_partition_default  = true;
+    features.has_attach_partition   = true;
+
     generate_indexes();
 }
 
@@ -692,6 +729,10 @@ dut_libpq::dut_libpq(string db, unsigned int port, string path,
 {
     string set_timeout_cmd = "SET statement_timeout = '" + to_string(POSTGRES_TIMEOUT_SECOND) + "s';";
     test(set_timeout_cmd, NULL, NULL);
+
+    // Set isolation level to REPEATABLE READ (same as MySQL driver)
+    string set_iso_cmd = "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ;";
+    test(set_iso_cmd, NULL, NULL);
 }
 
 static bool is_expected_error(string error)
@@ -829,6 +870,14 @@ void dut_libpq::reset(void)
         cerr << err << " in " << debug_info << endl;
         throw runtime_error(err + " in " + debug_info);
     }
+
+    // Re-apply session settings after reconnection
+    string set_iso = "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ;";
+    auto res2 = PQexec(conn, set_iso.c_str());
+    PQclear(res2);
+    string set_timeout = "SET statement_timeout = '" + to_string(POSTGRES_TIMEOUT_SECOND) + "s';";
+    auto res3 = PQexec(conn, set_timeout.c_str());
+    PQclear(res3);
 }
 
 void dut_libpq::backup(void)
@@ -859,6 +908,16 @@ void dut_libpq::reset_to_backup(void)
     if (PQstatus(conn) != CONNECTION_OK) {
         string err = PQerrorMessage(conn);
         throw runtime_error("[CONNECTION FAIL] " + err + " in " + debug_info);
+    }
+
+    // Re-apply session settings after reconnection
+    {
+        string set_iso = "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ;";
+        auto r = PQexec(conn, set_iso.c_str());
+        PQclear(r);
+        string set_timeout = "SET statement_timeout = '" + to_string(POSTGRES_TIMEOUT_SECOND) + "s';";
+        auto r2 = PQexec(conn, set_timeout.c_str());
+        PQclear(r2);
     }
 
     ifstream ifs(bk_file);

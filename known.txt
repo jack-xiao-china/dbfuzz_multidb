@@ -1,0 +1,49 @@
+# known.txt — Exact substring patterns for boring/expected errors
+# Lines starting with # are comments. Empty lines are ignored.
+# Each line is a substring that, if found in an error message,
+# causes the error to be suppressed from output.
+# (Impedance feedback still tracks these errors for grammar adaptation.)
+
+# PostgreSQL common non-bug errors
+permission denied
+must be owner of
+already exists
+does not exist
+duplicate key value violates unique constraint
+violates foreign key constraint
+violates not-null constraint
+value too long for type
+cannot insert into column
+column reference
+ambiguous column name
+invalid input syntax
+out of range
+division by zero
+operator does not exist
+function does not exist
+aggregate does not exist
+window function call is not allowed
+argument of WHERE must be type boolean
+argument of HAVING must be type boolean
+return type mismatch
+cannot cast type
+no conversion function
+encoding conversion
+invalid regular expression
+subquery has too many columns
+subquery must return only one column
+more than one row returned by a subquery
+UNION types
+INTERSECT types
+EXCEPT types
+
+# MySQL common non-bug errors
+Duplicate entry
+Column count doesn't match
+Unknown column
+Table doesn't exist
+Access denied
+Data too long
+Truncated incorrect
+Incorrect integer value
+Incorrect datetime value

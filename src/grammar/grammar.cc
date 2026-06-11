@@ -7,6 +7,8 @@
 #include "core/random.hh"
 #include "core/relmodel.hh"
 #include "grammar/grammar.hh"
+#include "grammar/savepoint_stmt.hh"
+#include "grammar/lock_stmt.hh"
 #include "schema/schema.hh"
 #include "core/impedance.hh"
 
@@ -20,6 +22,7 @@ int write_op_id = 0; // start from 10000
 static int row_id = 10000; // start from 10000
 
 map<string, int> tabl_pk_col_id;
+map<string, partition_info> table_partitions;
 static set<string> created_col_names;
 static set<string> created_win_names;
 static set<string> exist_table_name;
@@ -97,12 +100,38 @@ table_or_query_name::table_or_query_name(prod *p, bool only_base_table) : table_
         vector<table *> base_tables;
         for (auto& name_ptr:scope->tables) {
             auto table_ptr = dynamic_cast<table *>(name_ptr);
-            if (table_ptr && table_ptr->is_base_table == true) 
+            if (table_ptr && table_ptr->is_base_table == true)
                 base_tables.push_back(table_ptr);
         }
         t = random_pick(base_tables);
     }
     refs.push_back(make_shared<aliased_relation>(scope->stmt_uid("ref"), t));
+
+    // MySQL index hints (USE/FORCE/IGNORE INDEX)
+    if (schema::target_dbms == "mysql" && d9() == 1 && !scope->schema->indexes.empty()) {
+        auto hint_type = d6();
+        string hint;
+        if (hint_type <= 2) hint = "use index";
+        else if (hint_type <= 4) hint = "force index";
+        else hint = "ignore index";
+        auto idx = random_pick(scope->schema->indexes);
+        index_hint = " " + hint + " (" + idx + ")";
+    }
+
+    // MySQL partition selection: SELECT ... FROM t PARTITION (p0, p1)
+    if (schema::target_dbms == "mysql" && scope->schema->features.has_partition_select && d6() <= 2) {
+        auto it = table_partitions.find(t->ident());
+        if (it != table_partitions.end() && !it->second.partition_names.empty()) {
+            auto &pnames = it->second.partition_names;
+            int count = std::min((int)pnames.size(), dx(2));  // 1-2 partitions
+            partition_hint = " partition (";
+            for (int i = 0; i < count; i++) {
+                partition_hint += pnames[i % pnames.size()];
+                if (i < count - 1) partition_hint += ", ";
+            }
+            partition_hint += ")";
+        }
+    }
 }
 
 table_or_query_name::table_or_query_name(prod *p, table *target_table) : table_ref(p) {
@@ -111,10 +140,19 @@ table_or_query_name::table_or_query_name(prod *p, table *target_table) : table_r
 }
 
 void table_or_query_name::out(std::ostream &out) {
-    if (refs[0]->ident() != t->ident())
-        out << t->ident() << " as " << refs[0]->ident();
-    else
+    if (refs[0]->ident() != t->ident()) {
         out << t->ident();
+        // PARTITION hint must come before alias in MySQL
+        if (!partition_hint.empty())
+            out << partition_hint;
+        out << " as " << refs[0]->ident();
+    } else {
+        out << t->ident();
+        if (!partition_hint.empty())
+            out << partition_hint;
+    }
+    if (!index_hint.empty())
+        out << index_hint;
 }
 
 target_table::target_table(prod *p, table *victim) : table_ref(p)
@@ -261,14 +299,19 @@ joined_table::joined_table(prod *p) : table_ref(p) {
 void joined_table::out(std::ostream &out) {
     if (scope->schema->target_dbms != "clickhouse")
         out << "(";
-    
+
     out << *lhs;
     indent(out);
-    out << type << " join " << *rhs;
+    if (type == "straight_join")
+        out << "straight_join " << *rhs;
+    else if (type == "natural")
+        out << "natural join " << *rhs;
+    else
+        out << type << " join " << *rhs;
     indent(out);
-    if (type != "cross")
+    if (type != "cross" && type != "natural")
         out << "on (" << *condition << ")";
-    
+
     if (scope->schema->target_dbms != "clickhouse")
         out << ")";
 }
@@ -394,7 +437,7 @@ void select_list::out(std::ostream &out)
 }
 
 void query_spec::out(std::ostream &out) {
-    out << "select " << set_quantifier << " " << *select_list;
+    out << "select " << mysql_select_options << set_quantifier << " " << *select_list;
     indent(out);
     out << *from_clause;
     indent(out);
@@ -577,6 +620,16 @@ query_spec::query_spec(prod *p, struct scope *s,
         set_quantifier = "";
     else
         set_quantifier = (d9() == 1) ? "distinct" : "";
+
+    // MySQL SELECT options (from sql_yacc.yy select_options)
+    if (schema::target_dbms == "mysql" && d9() == 1) {
+        auto opt = d6();
+        if (opt <= 2) mysql_select_options = "sql_calc_found_rows ";
+        else if (opt == 3) mysql_select_options = "sql_no_cache ";
+        else if (opt == 4) mysql_select_options = "high_priority ";
+        else if (opt == 5) mysql_select_options = "sql_small_result ";
+        else mysql_select_options = "sql_big_result ";
+    }
 }
 
 query_spec::query_spec(prod *p, struct scope *s,
@@ -618,6 +671,16 @@ query_spec::query_spec(prod *p, struct scope *s,
 }
 
 long prepare_stmt::seq;
+
+long execute_stmt::last_prep_id = 0;
+
+execute_stmt::execute_stmt(prod *p) : prod(p)
+{
+    // Reference the most recently prepared statement
+    if (prepare_stmt::seq == 0)
+        fail("no prepared statements available");
+    prep_id = prepare_stmt::seq - 1;
+}
 
 void modifying_stmt::pick_victim()
 {
@@ -673,6 +736,15 @@ delete_stmt::delete_stmt(prod *p, struct scope *s, table *v)
 
     search = bool_expr::factory(this);
 
+    // MySQL ORDER BY + LIMIT in DELETE
+    if (schema::target_dbms == "mysql" && d6() == 1 && !victim->columns().empty()) {
+        has_order_limit = true;
+        auto &col = random_pick(victim->columns());
+        order_col = col.name;
+        order_asc = d6() > 3;
+        limit_num = d100();
+    }
+
     // Do not recover, because equivalent transform may also use the scope 
     // And recovering is unnecessary.
     // recover_tables(scope->tables, 
@@ -682,12 +754,18 @@ delete_stmt::delete_stmt(prod *p, struct scope *s, table *v)
 }
 
 void delete_stmt::out(ostream &out) {
-    if (schema::target_dbms == "clickhouse") 
+    if (schema::target_dbms == "clickhouse")
         out << "alter table " << victim->ident() << " delete";
-    else 
+    else
         out << "delete from " << victim->ident();
     indent(out);
     out << "where " << std::endl << *search;
+    if (has_order_limit) {
+        indent(out);
+        out << "order by " << order_col << (order_asc ? " asc" : " desc");
+        indent(out);
+        out << "limit " << limit_num;
+    }
 }
 
 delete_returning::delete_returning(prod *p, struct scope *s, table *victim)
@@ -815,6 +893,113 @@ void insert_stmt::out(std::ostream &out)
     }
 }
 
+// ── MySQL REPLACE statement ──
+replace_stmt::replace_stmt(prod *p, struct scope *s, table *v)
+  : insert_stmt(p, s, v)
+{
+    // Reuse insert_stmt logic — just changes the keyword
+}
+
+void replace_stmt::out(std::ostream &out)
+{
+    out << "replace into " << victim->ident() << " (";
+    auto col_num = valued_column_name.size();
+    for (size_t i = 0; i < col_num; i++) {
+        out << valued_column_name[i];
+        if (i + 1 < col_num)
+            out << ", ";
+    }
+    out << ") ";
+    if (!value_exprs_vector.size()) {
+        out << "default values";
+        return;
+    }
+    out << "values ";
+    for (auto ve = value_exprs_vector.begin(); ve != value_exprs_vector.end(); ve++) {
+        out << "(";
+        for (auto expr = ve->begin(); expr != ve->end(); expr++) {
+            out << **expr;
+            if (expr + 1 != ve->end())
+                out << ", ";
+        }
+        out << ")";
+        if (ve + 1 != value_exprs_vector.end())
+            out << ", ";
+    }
+}
+
+// ── MySQL DO statement ──
+do_stmt::do_stmt(prod *p, struct scope *s) : prod(p)
+{
+    scope = s;
+    int num_exprs = d6() > 4 ? 3 : (d6() > 3 ? 2 : 1);
+    for (int i = 0; i < num_exprs; i++)
+        exprs.push_back(value_expr::factory(this));
+}
+
+void do_stmt::out(std::ostream &out)
+{
+    out << "do ";
+    for (size_t i = 0; i < exprs.size(); i++) {
+        out << *exprs[i];
+        if (i + 1 < exprs.size())
+            out << ", ";
+    }
+}
+
+// ── MySQL EXPLAIN statement ──
+explain_stmt::explain_stmt(prod *p, struct scope *s) : prod(p)
+{
+    scope = s;
+    auto choice = d6();
+    if (choice <= 2)
+        explain_type = "explain";
+    else if (choice == 3)
+        explain_type = "explain analyze";
+    else if (choice == 4)
+        explain_type = "explain format=json";
+    else if (choice == 5)
+        explain_type = "explain format=tree";
+    else
+        explain_type = "explain format=traditional";
+
+    // EXPLAIN wraps a SELECT/INSERT/UPDATE/DELETE
+    auto inner_choice = d6();
+    if (inner_choice <= 4)
+        inner_stmt = make_shared<query_spec>(this, s);
+    else if (inner_choice == 5)
+        inner_stmt = make_shared<delete_stmt>(this, s);
+    else
+        inner_stmt = make_shared<update_stmt>(this, s);
+}
+
+void explain_stmt::out(std::ostream &out)
+{
+    out << explain_type << " ";
+    out << *inner_stmt;
+}
+
+// ── MySQL table maintenance statements ──
+table_maintenance_stmt::table_maintenance_stmt(prod *p, struct scope *s) : prod(p)
+{
+    scope = s;
+    victim = random_pick(scope->schema->base_tables);
+    auto choice = d6();
+    if (choice <= 2)
+        command = "checksum table";
+    else if (choice == 3)
+        command = "check table";
+    else if (choice == 4)
+        command = "optimize table";
+    else
+        command = "repair table";
+}
+
+void table_maintenance_stmt::out(std::ostream &out)
+{
+    out << command << " " << victim->ident();
+}
+
 set_list::set_list(prod *p, table *target) : prod(p), myscope(p->scope)
 {
     // update's scope might change (e.g. add victim table to scope->refs), 
@@ -903,6 +1088,15 @@ update_stmt::update_stmt(prod *p, struct scope *s, table *v)
     set_list = make_shared<struct set_list>(this, victim);
     scope->refs.push_back(victim);
     search = bool_expr::factory(this);
+
+    // MySQL ORDER BY + LIMIT in UPDATE
+    if (schema::target_dbms == "mysql" && d6() == 1 && !victim->columns().empty()) {
+        has_order_limit = true;
+        auto &col = random_pick(victim->columns());
+        order_col = col.name;
+        order_asc = d6() > 3;
+        limit_num = d100();
+    }
     
     // Do not recover, because equivalent transform may also use the scope 
     // And recovering is unnecessary.
@@ -923,6 +1117,12 @@ void update_stmt::out(std::ostream &out)
     out << victim->ident() << *set_list;
     indent(out);
     out << "where " << *search;
+    if (has_order_limit) {
+        indent(out);
+        out << "order by " << order_col << (order_asc ? " asc" : " desc");
+        indent(out);
+        out << "limit " << limit_num;
+    }
 }
 
 update_returning::update_returning(prod *p, struct scope *s, table *v)
@@ -958,16 +1158,35 @@ common_table_expression::common_table_expression(prod *parent, struct scope *s, 
   : prod(parent), myscope(s)
 {
     scope = &myscope;
-    do {
-        shared_ptr<query_spec> query = make_shared<query_spec>(this, s, false, (vector<sqltype *> *)NULL, txn_mode);
-        with_queries.push_back(query);
+
+    // Decide whether to generate WITH RECURSIVE (30% chance for MySQL/PG)
+    // WITH RECURSIVE requires UNION ALL between anchor and recursive part
+    bool can_recursive = (schema::target_dbms == "mysql" || schema::target_dbms == "postgres");
+    is_recursive = (can_recursive && !txn_mode && d6() > 4);  // ~17% chance
+
+    if (is_recursive) {
+        // Generate a single recursive CTE: anchor UNION ALL recursive_part
+        shared_ptr<query_spec> anchor = make_shared<query_spec>(this, s, false, (vector<sqltype *> *)NULL, txn_mode);
+        with_queries.push_back(anchor);
+
         string alias = scope->stmt_uid("cte");
-        relation *relation = &query->select_list->derived_table;
+        relation *relation = &anchor->select_list->derived_table;
         auto aliased_rel = make_shared<aliased_relation>(alias, relation);
         refs.push_back(aliased_rel);
         scope->tables.push_back(&*aliased_rel);
-
-    } while (d6() > 2);
+        // Note: the recursive part will reference the CTE via scope->tables
+    } else {
+        // Standard non-recursive CTE: one or more CTEs
+        do {
+            shared_ptr<query_spec> query = make_shared<query_spec>(this, s, false, (vector<sqltype *> *)NULL, txn_mode);
+            with_queries.push_back(query);
+            string alias = scope->stmt_uid("cte");
+            relation *relation = &query->select_list->derived_table;
+            auto aliased_rel = make_shared<aliased_relation>(alias, relation);
+            refs.push_back(aliased_rel);
+            scope->tables.push_back(&*aliased_rel);
+        } while (d6() > 2);
+    }
 
 retry:
     try {
@@ -976,21 +1195,160 @@ retry:
         retry();
         goto retry;
     }
-
 }
 
 void common_table_expression::out(std::ostream &out)
 {
-    out << "WITH " ;
+    out << "WITH ";
+    if (is_recursive)
+        out << "RECURSIVE ";
     for (size_t i = 0; i < with_queries.size(); i++) {
         indent(out);
-        out << refs[i]->ident() << " AS " << "(" << *with_queries[i] << ")";
+        out << refs[i]->ident() << " AS " << "(" << *with_queries[i];
+        if (is_recursive) {
+            // For recursive CTE: anchor UNION ALL recursive_part
+            // The recursive part references the CTE itself via scope->tables
+            out << " union all " << *query;
+        }
+        out << ")";
         if (i+1 != with_queries.size())
             out << ", ";
         indent(out);
     }
-    out << *query;
+    if (!is_recursive)
+        out << *query;
+    else
+        out << "select * from " << refs[0]->ident();
     indent(out);
+}
+
+// ── Data-Modifying CTE implementation ──
+
+cte_dml_item::cte_dml_item(prod *p, struct scope *s, table *v)
+    : prod(p), victim(v)
+{
+    match();
+    scope = &myscope;
+    myscope.parent = s;
+    myscope.schema = s->schema;
+    myscope.tables = s->tables;
+    myscope.refs = s->refs;
+    myscope.stmt_seq = s->stmt_seq;
+    myscope.indexes = s->indexes;
+
+    // Exclude victim table from refs to avoid self-reference issues
+    vector<named_relation*> filtered_refs;
+    for (auto r : myscope.refs) {
+        if (r != static_cast<named_relation*>(victim))
+            filtered_refs.push_back(r);
+    }
+    myscope.refs = filtered_refs;
+
+    // Random DML type
+    switch (d6()) {
+        case 1: case 2:
+            type = CTE_DELETE;
+            dml_stmt = make_shared<delete_stmt>(this, &myscope, victim);
+            break;
+        case 3: case 4:
+            type = CTE_UPDATE;
+            dml_stmt = make_shared<update_stmt>(this, &myscope, victim);
+            break;
+        default:
+            type = CTE_INSERT;
+            dml_stmt = make_shared<insert_stmt>(this, &myscope, victim);
+            break;
+    }
+}
+
+void cte_dml_item::out(std::ostream &out)
+{
+    out << *dml_stmt;
+    out << " returning ";
+    auto &cols = victim->columns();
+    for (size_t i = 0; i < cols.size(); i++) {
+        out << cols[i].name;
+        if (i + 1 < cols.size()) out << ", ";
+    }
+}
+
+void cte_dml_item::accept(prod_visitor *v)
+{
+    v->visit(this);
+    dml_stmt->accept(v);
+}
+
+data_modifying_cte::data_modifying_cte(prod *p, struct scope *s, bool txn_mode)
+    : prod(p)
+{
+    match();
+    scope = &myscope;
+    myscope.parent = s;
+    myscope.schema = s->schema;
+    myscope.tables = s->tables;
+    myscope.refs = s->refs;
+    myscope.stmt_seq = s->stmt_seq;
+    myscope.indexes = s->indexes;
+
+    // Check DBMS support
+    if (!scope->schema->features.has_data_mod_cte)
+        fail("data-modifying CTE not supported by this DBMS");
+
+    // Find writable base tables
+    vector<table*> writable_tables;
+    for (auto *t : myscope.tables) {
+        auto *tbl = dynamic_cast<table*>(t);
+        if (tbl && tbl->is_base_table && tbl->is_insertable
+            && tbl->columns().size() > 0) {
+            writable_tables.push_back(tbl);
+        }
+    }
+    if (writable_tables.empty())
+        fail("need at least 1 writable table for data-modifying CTE");
+
+    // Generate 1-2 CTE DML items
+    int cte_count = d6() > 4 ? 2 : 1;
+
+    for (int i = 0; i < cte_count; i++) {
+        table *victim = random_pick(writable_tables);
+
+        auto item = make_shared<cte_dml_item>(this, &myscope, victim);
+        cte_items.push_back(item);
+
+        // Create CTE alias as named_relation for subsequent references
+        auto cte_alias = make_shared<named_relation>("dcte" + to_string(i));
+        // CTE returns all columns of victim table
+        for (auto &c : victim->columns())
+            cte_alias->cols.push_back(c);
+        cte_refs.push_back(cte_alias);
+        myscope.tables.push_back(cte_alias.get());
+    }
+
+    // Generate final query that can reference CTE aliases
+    final_query = make_shared<query_spec>(this, &myscope, false,
+                                          (vector<sqltype*>*)NULL, txn_mode);
+}
+
+void data_modifying_cte::out(std::ostream &out)
+{
+    out << "WITH ";
+    for (size_t i = 0; i < cte_items.size(); i++) {
+        indent(out);
+        out << cte_refs[i]->name << " AS (" << *cte_items[i] << ")";
+        if (i + 1 < cte_items.size())
+            out << ", ";
+    }
+    indent(out);
+    out << *final_query;
+    indent(out);
+}
+
+void data_modifying_cte::accept(prod_visitor *v)
+{
+    v->visit(this);
+    for (auto &item : cte_items)
+        item->accept(v);
+    final_query->accept(v);
 }
 
 merge_stmt::merge_stmt(prod *p, struct scope *s, table *v)
@@ -1224,6 +1582,349 @@ string unique_index_name(scope *s)
     return new_index_name;
 }
 
+/// PostgreSQL: generate PARTITION BY clause + sub-table CREATE TABLE statements
+/// Returns the PARTITION BY clause. Populates sub_stmts with PARTITION OF statements.
+string pg_partition_option(prod* p, shared_ptr<table> created_table, int primary_col_id,
+                           vector<string> &sub_stmts, bool &out_has_subpartition)
+{
+    string result;
+    auto &cols = created_table->columns();
+    out_has_subpartition = false;
+
+    // Always use primary key column — PG requires partition key to be in UNIQUE/PK
+    int part_col = primary_col_id;
+    int num_partitions = dx(3) + 1;  // 2–4
+    string table_name = created_table->name;
+
+    int choice = d6();
+
+    if (choice <= 2) {
+        // ── RANGE ──
+        // Use wide bounds to cover pkey values (typically 1-100 from d100())
+        result = "partition by range (" + cols[part_col].name + ")";
+
+        int lower = -(dx(20));  // small negative start
+        for (int i = 0; i < num_partitions; i++) {
+            int upper = lower + dx(60) + 10;
+            string sub_name = table_name + "_p" + to_string(i);
+            sub_stmts.push_back("create table " + sub_name + " partition of " + table_name
+                + " for values from (" + to_string(lower) + ") to (" + to_string(upper) + ")");
+            lower = upper;
+        }
+
+        // DEFAULT partition (catch-all for out-of-range values)
+        if (p->scope->schema->features.has_partition_default && d6() <= 4) {
+            sub_stmts.push_back("create table " + table_name + "_default partition of " + table_name + " default");
+        }
+
+    } else if (choice <= 4) {
+        // ── LIST ──
+        // Use integer values from expected pkey range
+        result = "partition by list (" + cols[part_col].name + ")";
+
+        set<int> used_values;
+        for (int i = 0; i < num_partitions; i++) {
+            string sub_name = table_name + "_p" + to_string(i);
+            string values_clause = "create table " + sub_name + " partition of " + table_name + " for values in (";
+            int list_len = dx(4) + 2;  // 2-6 values per partition for better coverage
+            for (int j = 0; j < list_len; j++) {
+                int val;
+                do { val = d100(); } while (used_values.count(val));
+                used_values.insert(val);
+                values_clause += to_string(val);
+                if (j < list_len - 1) values_clause += ", ";
+            }
+            values_clause += ")";
+            sub_stmts.push_back(values_clause);
+        }
+
+        // DEFAULT partition (essential for LIST — catches unlisted values)
+        if (p->scope->schema->features.has_partition_default) {
+            sub_stmts.push_back("create table " + table_name + "_default partition of " + table_name + " default");
+        }
+
+    } else {
+        // ── HASH ── (works with any column type, including int)
+        result = "partition by hash (" + cols[part_col].name + ")";
+
+        int modulus = num_partitions;
+        for (int i = 0; i < modulus; i++) {
+            string sub_name = table_name + "_p" + to_string(i);
+            sub_stmts.push_back("create table " + sub_name + " partition of " + table_name
+                + " for values with (modulus " + to_string(modulus) + ", remainder " + to_string(i) + ")");
+        }
+    }
+
+    // Note: PG sub-partitioning disabled — it requires sub-partition keys to also be
+    // in the UNIQUE constraint, which complicates our single-column PK approach.
+
+    return result;
+}
+
+/// MySQL: generate PARTITION BY clause for CREATE TABLE
+/// Returns the partition clause string. Sets out_partition_col_id to the column index used.
+string mysql_partition_option(prod* p, shared_ptr<table> created_table, int primary_col_id,
+                              int &out_partition_col_id, bool &out_has_subpartition,
+                              int &out_subpartition_col_id)
+{
+    string result;
+    auto &cols = created_table->columns();
+    int col_count = cols.size();
+    out_has_subpartition = false;
+
+    // Choose partition column — prefer primary key to satisfy the
+    // "partition key must be in every unique key" constraint
+    int part_col = primary_col_id;
+    sqltype *part_type = cols[part_col].type;
+
+    // Choose partition type
+    int choice = d9();
+
+    if (choice <= 2 || choice == 7) {
+        // ── RANGE / RANGE COLUMNS ──
+        // RANGE needs integer column; RANGE COLUMNS supports any type
+        bool is_columns = (choice == 7);
+
+        if (!is_columns && part_type != p->scope->schema->inttype) {
+            // fallback: find an integer column
+            bool found = false;
+            for (int i = 0; i < col_count; i++) {
+                if (cols[i].type == p->scope->schema->inttype) {
+                    part_col = i;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                // use primary key with RANGE COLUMNS instead
+                is_columns = true;
+            }
+        }
+
+        out_partition_col_id = part_col;
+        int num_partitions = dx(3) + 1;  // 2–4 partitions
+
+        if (is_columns)
+            result = "partition by range columns (" + cols[part_col].name + ") (\n";
+        else
+            result = "partition by range (" + cols[part_col].name + ") (\n";
+
+        int boundary = 0;
+        for (int i = 0; i < num_partitions; i++) {
+            result += "partition p" + to_string(i) + " values less than (";
+            if (i < num_partitions - 1) {
+                boundary += dx(30) + 1;
+                result += to_string(boundary);
+            } else {
+                result += "maxvalue";
+            }
+            result += ")";
+            if (i < num_partitions - 1) result += ",\n";
+        }
+        result += ")";
+
+        // Subpartition: 30% chance for RANGE/RANGE COLUMNS
+        if (p->scope->schema->features.has_subpartition && d100() <= 30) {
+            // find a sub-partition column (different from partition column, integer preferred)
+            int sub_col = -1;
+            for (int i = 0; i < col_count; i++) {
+                if (i != part_col && cols[i].type == p->scope->schema->inttype) {
+                    sub_col = i;
+                    break;
+                }
+            }
+            if (sub_col == -1) {
+                // use primary key or any column for KEY subpartition
+                for (int i = 0; i < col_count; i++) {
+                    if (i != part_col) { sub_col = i; break; }
+                }
+            }
+            if (sub_col >= 0) {
+                bool use_key = (cols[sub_col].type != p->scope->schema->inttype);
+                int sub_count = dx(2) + 2;  // 2–4 subpartitions
+                // Rebuild with subpartition clause inserted before partition definitions
+                string prefix;
+                if (is_columns)
+                    prefix = "partition by range columns (" + cols[part_col].name + ")\n";
+                else
+                    prefix = "partition by range (" + cols[part_col].name + ")\n";
+
+                if (use_key)
+                    prefix += "subpartition by key (" + cols[sub_col].name + ")\nsubpartitions " + to_string(sub_count) + " (\n";
+                else
+                    prefix += "subpartition by hash (" + cols[sub_col].name + ")\nsubpartitions " + to_string(sub_count) + " (\n";
+
+                // Rebuild partition definitions
+                boundary = 0;
+                for (int i = 0; i < num_partitions; i++) {
+                    prefix += "partition p" + to_string(i) + " values less than (";
+                    if (i < num_partitions - 1) {
+                        boundary += dx(30) + 1;
+                        prefix += to_string(boundary);
+                    } else {
+                        prefix += "maxvalue";
+                    }
+                    prefix += ")";
+                    if (i < num_partitions - 1) prefix += ",\n";
+                }
+                prefix += ")";
+                result = prefix;
+                out_has_subpartition = true;
+                out_subpartition_col_id = sub_col;
+            }
+        }
+
+    } else if (choice <= 4 || choice == 8) {
+        // ── LIST / LIST COLUMNS ──
+        bool is_columns = (choice == 8);
+
+        if (!is_columns && part_type != p->scope->schema->inttype) {
+            bool found = false;
+            for (int i = 0; i < col_count; i++) {
+                if (cols[i].type == p->scope->schema->inttype) {
+                    part_col = i;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) is_columns = true;
+        }
+
+        out_partition_col_id = part_col;
+        int num_partitions = dx(3) + 1;  // 2–4
+
+        if (is_columns)
+            result = "partition by list columns (" + cols[part_col].name + ") (\n";
+        else
+            result = "partition by list (" + cols[part_col].name + ") (\n";
+
+        set<int> used_values;
+        for (int i = 0; i < num_partitions; i++) {
+            result += "partition p" + to_string(i) + " values in (";
+            int list_len = dx(3) + 1;  // 1–4 values
+            for (int j = 0; j < list_len; j++) {
+                int val;
+                do { val = d100(); } while (used_values.count(val));
+                used_values.insert(val);
+                result += to_string(val);
+                if (j < list_len - 1) result += ", ";
+            }
+            result += ")";
+            if (i < num_partitions - 1) result += ",\n";
+        }
+        result += ")";
+
+        // Subpartition: 30% chance
+        if (p->scope->schema->features.has_subpartition && d100() <= 30) {
+            int sub_col = -1;
+            for (int i = 0; i < col_count; i++) {
+                if (i != part_col && cols[i].type == p->scope->schema->inttype) {
+                    sub_col = i;
+                    break;
+                }
+            }
+            if (sub_col == -1) {
+                for (int i = 0; i < col_count; i++) {
+                    if (i != part_col) { sub_col = i; break; }
+                }
+            }
+            if (sub_col >= 0) {
+                bool use_key = (cols[sub_col].type != p->scope->schema->inttype);
+                int sub_count = dx(2) + 2;
+
+                string prefix;
+                if (is_columns)
+                    prefix = "partition by list columns (" + cols[part_col].name + ")\n";
+                else
+                    prefix = "partition by list (" + cols[part_col].name + ")\n";
+
+                if (use_key)
+                    prefix += "subpartition by key (" + cols[sub_col].name + ")\nsubpartitions " + to_string(sub_count) + " (\n";
+                else
+                    prefix += "subpartition by hash (" + cols[sub_col].name + ")\nsubpartitions " + to_string(sub_count) + " (\n";
+
+                used_values.clear();
+                for (int i = 0; i < num_partitions; i++) {
+                    prefix += "partition p" + to_string(i) + " values in (";
+                    int list_len = dx(3) + 1;
+                    for (int j = 0; j < list_len; j++) {
+                        int val;
+                        do { val = d100(); } while (used_values.count(val));
+                        used_values.insert(val);
+                        prefix += to_string(val);
+                        if (j < list_len - 1) prefix += ", ";
+                    }
+                    prefix += ")";
+                    if (i < num_partitions - 1) prefix += ",\n";
+                }
+                prefix += ")";
+                result = prefix;
+                out_has_subpartition = true;
+                out_subpartition_col_id = sub_col;
+            }
+        }
+
+    } else if (choice <= 6) {
+        // ── HASH / KEY ──
+        bool is_key = (choice == 6);
+
+        // HASH needs integer column; KEY supports any type
+        if (!is_key && part_type != p->scope->schema->inttype) {
+            bool found = false;
+            for (int i = 0; i < col_count; i++) {
+                if (cols[i].type == p->scope->schema->inttype) {
+                    part_col = i;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) is_key = true;  // fallback to KEY
+        }
+
+        out_partition_col_id = part_col;
+        int num_partitions = dx(3) + 2;  // 2–5 partitions
+
+        if (is_key) {
+            // Check for LINEAR KEY (10% chance)
+            if (d100() <= 10)
+                result = "partition by linear key (";
+            else
+                result = "partition by key (";
+        } else {
+            // Check for LINEAR HASH (10% chance)
+            if (d100() <= 10)
+                result = "partition by linear hash (";
+            else
+                result = "partition by hash (";
+        }
+
+        result += cols[part_col].name + ")\npartitions " + to_string(num_partitions);
+
+    } else {
+        // choice == 9: LINEAR HASH or LINEAR KEY
+        bool use_key = (d6() <= 3);
+        out_partition_col_id = part_col;
+        int num_partitions = dx(3) + 2;
+
+        if (use_key)
+            result = "partition by linear key (" + cols[part_col].name + ")\npartitions " + to_string(num_partitions);
+        else {
+            if (part_type != p->scope->schema->inttype) {
+                for (int i = 0; i < col_count; i++) {
+                    if (cols[i].type == p->scope->schema->inttype) {
+                        part_col = i;
+                        break;
+                    }
+                }
+            }
+            out_partition_col_id = part_col;
+            result = "partition by linear hash (" + cols[part_col].name + ")\npartitions " + to_string(num_partitions);
+        }
+    }
+
+    return result;
+}
+
 // must partition primary key
 string cockroach_table_option(prod* p, shared_ptr<table> created_table, int primary_col_id)
 {
@@ -1240,7 +1941,15 @@ string cockroach_table_option(prod* p, shared_ptr<table> created_table, int prim
         return table_option;
     }
 
-    if (rand <= 5 || 
+    // HASH partition (15% chance, requires numeric column)
+    if (rand == 2 && (partion_col.type == p->scope->schema->inttype
+                      || partion_col.type == p->scope->schema->realtype)) {
+        auto num_partitions = dx(4) + 1;  // 2–5
+        table_option += "hash (" + partion_col.name + ")\npartitions " + to_string(num_partitions);
+        return table_option;
+    }
+
+    if (rand <= 6 ||
             (partion_col.type != p->scope->schema->inttype && partion_col.type != p->scope->schema->realtype)
         ) { // list partion
         table_option += "list (";
@@ -1426,9 +2135,78 @@ create_table_stmt::create_table_stmt(prod *parent, struct scope *s)
             has_option = true;
             table_option += " " + cockroach_table_option(this, created_table, primary_col_id);
         }
+        // MySQL partition table
+        else if (scope->schema->target_dbms == "mysql" && has_primary_key
+                 && scope->schema->features.has_partition_table && d6() <= 3) {
+            has_option = true;
+            bool has_sub = false;
+            table_option += " " + mysql_partition_option(this, created_table, primary_col_id,
+                                                         partition_col_id, has_sub,
+                                                         subpartition_col_id);
+            // Force InnoDB engine — only InnoDB supports partitioning
+            has_engine = true;
+            table_engine = "InnoDB";
+            // Record partition metadata
+            if (partition_col_id >= 0) {
+                partition_info pi;
+                // Determine partition type from generated string
+                if (table_option.find("partition by range") != string::npos)
+                    pi.partition_type = "RANGE";
+                else if (table_option.find("partition by list") != string::npos)
+                    pi.partition_type = "LIST";
+                else if (table_option.find("partition by hash") != string::npos ||
+                         table_option.find("partition by linear hash") != string::npos)
+                    pi.partition_type = "HASH";
+                else
+                    pi.partition_type = "KEY";
+                pi.partition_col = created_table->columns()[partition_col_id].name;
+                pi.has_subpartition = has_sub;
+                // Extract partition names (p0, p1, ...)
+                for (int i = 0; i < 10; i++) {
+                    string pname = "p" + to_string(i);
+                    if (table_option.find(pname) != string::npos)
+                        pi.partition_names.push_back(pname);
+                }
+                table_partitions[created_table->ident()] = pi;
+            }
+            // MySQL partition tables do NOT support foreign keys
+            has_foreign_key = false;
+        }
+        // PostgreSQL partition table
+        else if (scope->schema->target_dbms == "postgres" && has_primary_key
+                 && scope->schema->features.has_partition_table && d6() <= 3) {
+            has_option = true;
+            bool has_sub = false;
+            table_option = pg_partition_option(this, created_table, primary_col_id,
+                                                partition_subtable_stmts, has_sub);
+            // Record partition metadata for PG
+            partition_info pi;
+            if (table_option.find("partition by range") != string::npos)
+                pi.partition_type = "RANGE";
+            else if (table_option.find("partition by list") != string::npos)
+                pi.partition_type = "LIST";
+            else
+                pi.partition_type = "HASH";
+            pi.partition_col = created_table->columns()[primary_col_id].name;
+            pi.has_subpartition = has_sub;
+            // Extract partition names
+            for (auto &stmt : partition_subtable_stmts) {
+                string sub_name = created_table->name + "_p";
+                size_t pos = stmt.find(sub_name);
+                if (pos != string::npos) {
+                    size_t end = stmt.find(" partition of", pos);
+                    if (end != string::npos)
+                        pi.partition_names.push_back(stmt.substr(pos, end - pos));
+                }
+            }
+            if (!pi.partition_names.empty())
+                table_partitions[created_table->ident()] = pi;
+            // PG partition tables: foreign keys not supported on partitioned parent
+            has_foreign_key = false;
+        }
     }
 
-    if (!scope->schema->supported_table_engine.empty()) {
+    if (!scope->schema->supported_table_engine.empty() && !has_engine) {
         has_engine = true;
         table_engine = random_pick(scope->schema->supported_table_engine);
     }
@@ -1463,7 +2241,17 @@ void create_table_stmt::out(std::ostream &out)
     if (has_primary_key) {
         out << ",";
         indent(out);
-        out << "primary key(" << created_table->columns()[primary_col_id].name << ")";
+        out << "primary key(" << created_table->columns()[primary_col_id].name;
+        // Include partition column in PK if different (MySQL/PG requirement)
+        if (partition_col_id >= 0 && partition_col_id != primary_col_id) {
+            out << ", " << created_table->columns()[partition_col_id].name;
+        }
+        // Include sub-partition column in PK if different (MySQL requirement)
+        if (subpartition_col_id >= 0 && subpartition_col_id != primary_col_id
+            && subpartition_col_id != partition_col_id) {
+            out << ", " << created_table->columns()[subpartition_col_id].name;
+        }
+        out << ")";
         tabl_pk_col_id.insert_or_assign(created_table->ident(), primary_col_id);
     }
 
@@ -1500,12 +2288,24 @@ skipfk:
     indent(out);
     out << ")";
 
+    // MySQL: ENGINE comes before PARTITION BY
+    if (has_engine && scope->schema->target_dbms == "mysql") {
+        out << " engine = " << table_engine;
+    }
+
     if (has_option) {
         out << " " << table_option;
     }
 
-    if (has_engine) {
-        out << "engine = " << table_engine << endl;
+    if (has_engine && scope->schema->target_dbms != "mysql") {
+        out << " engine = " << table_engine << endl;
+    } else if (has_engine && scope->schema->target_dbms == "mysql") {
+        out << endl;
+    }
+
+    // PG: output sub-partition CREATE TABLE ... PARTITION OF statements
+    for (auto &stmt : partition_subtable_stmts) {
+        out << ";\n" << stmt;
     }
 }
 
@@ -1527,7 +2327,7 @@ void create_view_stmt::out(std::ostream &out)
     out << *subquery;
 }
 
-group_clause::group_clause(prod *p, struct scope *s, 
+group_clause::group_clause(prod *p, struct scope *s,
             shared_ptr<struct select_list> select_list,
             std::vector<shared_ptr<named_relation> > *from_refs)
 : prod(p), myscope(s), modified_select_list(select_list)
@@ -1535,6 +2335,67 @@ group_clause::group_clause(prod *p, struct scope *s,
     scope = &myscope;
     scope->tables = s->tables;
 
+    // Select grouping type
+    type = GROUP_SIMPLE;
+    if (scope->schema->features.has_grouping_sets && from_refs->size() >= 1) {
+        // Collect available columns from from_refs
+        vector<pair<named_relation*, column>> avail_cols;
+        for (auto &r : *from_refs)
+            for (auto &c : r->columns())
+                avail_cols.push_back({r.get(), c});
+
+        if (avail_cols.size() >= 2) {
+            switch (d6()) {
+                case 1: type = GROUP_GROUPING_SETS; break;
+                case 2: type = GROUP_CUBE; break;
+                case 3: type = GROUP_ROLLUP; break;
+                default: type = GROUP_SIMPLE; break;
+            }
+        }
+
+        if (type != GROUP_SIMPLE) {
+            // Collect 2-4 columns for grouping
+            int num_cols = min((int)avail_cols.size(), d6() > 4 ? 4 : (d6() > 3 ? 3 : 2));
+            for (int i = 0; i < num_cols && i < (int)avail_cols.size(); i++) {
+                auto &ac = avail_cols[i];
+                cube_rollup_cols.push_back(
+                    make_shared<column_reference>(this, ac.second.type, ac.second.name, ac.first->name));
+            }
+
+            // For GROUPING SETS, generate 2-4 group sets
+            if (type == GROUP_GROUPING_SETS) {
+                int num_sets = min(num_cols + 1, d6() > 4 ? 4 : (d6() > 3 ? 3 : 2));
+                for (int s = 0; s < num_sets; s++) {
+                    vector<shared_ptr<column_reference>> one_set;
+                    for (auto &col : cube_rollup_cols) {
+                        if (d6() > 3) one_set.push_back(col);
+                    }
+                    group_sets.push_back(one_set);
+                }
+                // Add empty set
+                if (d6() > 2)
+                    group_sets.push_back({});
+            }
+
+            // Wrap non-grouped select list columns with aggregate functions
+            auto& select_exprs = modified_select_list->value_exprs;
+            auto& select_columns = modified_select_list->derived_table.columns();
+            int tmp_group = use_group;
+            use_group = 0;
+            for (size_t i = 0; i < select_exprs.size(); i++) {
+                auto new_expr = make_shared<funcall>(this, (sqltype *)0, true);
+                select_exprs[i] = new_expr;
+                select_columns[i].type = new_expr->type;
+            }
+            use_group = tmp_group;
+
+            // Build having clause
+            having_cond_search = bool_expr::factory(this);
+            return;
+        }
+    }
+
+    // ── SIMPLE grouping (existing logic) ──
     auto& select_exprs = modified_select_list->value_exprs;
     auto& select_columns = modified_select_list->derived_table.columns();
 
@@ -1547,7 +2408,7 @@ group_clause::group_clause(prod *p, struct scope *s,
     scope->refs.clear();
     for (auto r : *from_refs)
         scope->refs.push_back(&*r);
-    
+
     int tmp_group = use_group;
     use_group = 0; // cannot use aggregate function in aggregate function
     for (size_t i = 0; i < size; i++) {
@@ -1566,7 +2427,7 @@ group_clause::group_clause(prod *p, struct scope *s,
     }
     use_group = tmp_group;
     scope->refs = tmp;
-    
+
     // generating having search condition
     // erase the refs in from clause
     for (int i = 0; i < scope->refs.size(); i++) {
@@ -1582,7 +2443,7 @@ group_clause::group_clause(prod *p, struct scope *s,
             i--;
         }
     }
-    
+
     // create a new relation to contain target_ref col and other col with aggregate function
     for (int i = 0; i < from_refs->size(); i++) {
         auto& ref = (*from_refs)[i];
@@ -1606,17 +2467,60 @@ group_clause::group_clause(prod *p, struct scope *s,
         tmp_store.push_back(new_relation);
         scope->refs.push_back(new_relation.get());
     }
-    
+
     // build having clause
     having_cond_search = bool_expr::factory(this);
-    
+
+    // MySQL WITH ROLLUP (appended to GROUP BY ... HAVING)
+    if (schema::target_dbms == "mysql" && d6() == 1)
+        with_rollup = true;
+
     // it use seperated my scope, do not need to restore the refs
     // scope->refs = tmp;
 }
 
 void group_clause::out(std::ostream &out)
 {
-    out << "group by " << *target_ref << " having " << *having_cond_search;
+    switch (type) {
+        case GROUP_SIMPLE:
+            out << "group by " << *target_ref;
+            if (with_rollup)
+                out << " with rollup";
+            out << " having " << *having_cond_search;
+            break;
+
+        case GROUP_GROUPING_SETS:
+            out << "group by grouping sets (";
+            for (size_t i = 0; i < group_sets.size(); i++) {
+                out << "(";
+                for (size_t j = 0; j < group_sets[i].size(); j++) {
+                    out << *group_sets[i][j];
+                    if (j + 1 < group_sets[i].size()) out << ", ";
+                }
+                out << ")";
+                if (i + 1 < group_sets.size()) out << ", ";
+            }
+            out << ") having " << *having_cond_search;
+            break;
+
+        case GROUP_CUBE:
+            out << "group by cube (";
+            for (size_t i = 0; i < cube_rollup_cols.size(); i++) {
+                out << *cube_rollup_cols[i];
+                if (i + 1 < cube_rollup_cols.size()) out << ", ";
+            }
+            out << ") having " << *having_cond_search;
+            break;
+
+        case GROUP_ROLLUP:
+            out << "group by rollup (";
+            for (size_t i = 0; i < cube_rollup_cols.size(); i++) {
+                out << *cube_rollup_cols[i];
+                if (i + 1 < cube_rollup_cols.size()) out << ", ";
+            }
+            out << ") having " << *having_cond_search;
+            break;
+    }
 }
 
 alter_table_stmt::alter_table_stmt(prod *parent, struct scope *s):
@@ -1625,13 +2529,173 @@ prod(parent), myscope(s)
     scope = &myscope;
     scope->tables = s->tables;
 
+    // MySQL partition management (stmt_type 6-12)
+    bool try_partition_mgmt = false;
+    if (scope->schema->target_dbms == "mysql" && scope->schema->features.has_partition_mgmt
+        && !table_partitions.empty() && d6() <= 2) {
+        try_partition_mgmt = true;
+    }
+
+    if (try_partition_mgmt) {
+        // Find a partitioned table
+        int attempts = 0;
+        named_relation *part_table_ref = NULL;
+        string part_table_name;
+        partition_info *pi = NULL;
+
+        for (auto &kv : table_partitions) {
+            // Find this table in scope
+            for (auto *t : scope->tables) {
+                if (t->ident() == kv.first) {
+                    part_table_ref = t;
+                    part_table_name = kv.first;
+                    pi = &kv.second;
+                    break;
+                }
+            }
+            if (part_table_ref) break;
+            if (++attempts > 20) break;
+        }
+
+        if (part_table_ref && pi) {
+            int ptype = d9();
+            if (ptype <= 2 && (pi->partition_type == "RANGE" || pi->partition_type == "LIST")) {
+                // ADD PARTITION
+                stmt_type = 6;
+                int new_pnum = pi->partition_names.size();
+                if (pi->partition_type == "RANGE") {
+                    int max_val = 100 + d100() * new_pnum;
+                    stmt_string = "alter table " + part_table_name + " add partition (partition p"
+                        + to_string(new_pnum) + " values less than (" + to_string(max_val) + "))";
+                } else {
+                    stmt_string = "alter table " + part_table_name + " add partition (partition p"
+                        + to_string(new_pnum) + " values in (" + to_string(d100()) + "))";
+                }
+                pi->partition_names.push_back("p" + to_string(new_pnum));
+                return;
+            }
+            else if (ptype <= 4 && pi->partition_names.size() > 2
+                     && (pi->partition_type == "RANGE" || pi->partition_type == "LIST")) {
+                // DROP PARTITION
+                stmt_type = 7;
+                int idx = dx(pi->partition_names.size() - 1) - 1;  // don't drop last
+                string drop_name = pi->partition_names[idx];
+                stmt_string = "alter table " + part_table_name + " drop partition " + drop_name;
+                return;
+            }
+            else if (ptype <= 5) {
+                // TRUNCATE PARTITION
+                stmt_type = 8;
+                string pname = random_pick(pi->partition_names);
+                stmt_string = "alter table " + part_table_name + " truncate partition " + pname;
+                return;
+            }
+            else if (ptype <= 6 && (pi->partition_type == "HASH" || pi->partition_type == "KEY")) {
+                // COALESCE PARTITION
+                stmt_type = 9;
+                stmt_string = "alter table " + part_table_name + " coalesce partition 1";
+                return;
+            }
+            else if (ptype <= 7 && pi->partition_type == "RANGE" && pi->partition_names.size() > 1) {
+                // REORGANIZE PARTITION
+                stmt_type = 10;
+                string pname = pi->partition_names[0];
+                int split_val = dx(50);
+                stmt_string = "alter table " + part_table_name + " reorganize partition " + pname
+                    + " into (partition " + pname + "a values less than (" + to_string(split_val)
+                    + "), partition " + pname + "b values less than (" + to_string(split_val + dx(50)) + "))";
+                return;
+            }
+            else if (ptype <= 8) {
+                // ANALYZE/CHECK/OPTIMIZE/REBUILD/REPAIR PARTITION
+                stmt_type = 11;
+                string pname = random_pick(pi->partition_names);
+                static const char *ops[] = {"analyze", "check", "optimize", "rebuild", "repair"};
+                string op = ops[smith::rng() % 5];
+                stmt_string = "alter table " + part_table_name + " " + op + " partition " + pname;
+                return;
+            }
+            else {
+                // REMOVE PARTITIONING
+                stmt_type = 12;
+                stmt_string = "alter table " + part_table_name + " remove partitioning";
+                // Remove from tracking map
+                table_partitions.erase(part_table_name);
+                return;
+            }
+        }
+    }
+
+    // PostgreSQL ATTACH/DETACH PARTITION (stmt_type 13-14)
+    if (scope->schema->target_dbms == "postgres" && scope->schema->features.has_attach_partition
+        && !table_partitions.empty() && d6() <= 2) {
+        // Find a partitioned table
+        named_relation *part_table_ref = NULL;
+        string part_table_name;
+        partition_info *pi = NULL;
+
+        for (auto &kv : table_partitions) {
+            for (auto *t : scope->tables) {
+                if (t->ident() == kv.first) {
+                    part_table_ref = t;
+                    part_table_name = kv.first;
+                    pi = &kv.second;
+                    break;
+                }
+            }
+            if (part_table_ref) break;
+        }
+
+        if (part_table_ref && pi && !pi->partition_names.empty()) {
+            if (d6() <= 3) {
+                // DETACH PARTITION
+                stmt_type = 14;
+                string detach_name = random_pick(pi->partition_names);
+                stmt_string = "alter table " + part_table_name + " detach partition " + detach_name;
+                return;
+            } else {
+                // ATTACH PARTITION — create a new table and attach it
+                stmt_type = 13;
+                string new_table = part_table_name + "_p" + to_string(pi->partition_names.size());
+                int pnum = pi->partition_names.size();
+
+                if (pi->partition_type == "RANGE") {
+                    int lower = 1000 + pnum * 100;
+                    int upper = lower + 100;
+                    stmt_string = "create table " + new_table + " (like " + part_table_name + "); "
+                        + "alter table " + part_table_name + " attach partition " + new_table
+                        + " for values from (" + to_string(lower) + ") to (" + to_string(upper) + ")";
+                } else if (pi->partition_type == "LIST") {
+                    int val = 1000 + pnum;
+                    stmt_string = "create table " + new_table + " (like " + part_table_name + "); "
+                        + "alter table " + part_table_name + " attach partition " + new_table
+                        + " for values in (" + to_string(val) + ")";
+                } else {
+                    // HASH
+                    int modulus = pnum + 1;
+                    stmt_string = "create table " + new_table + " (like " + part_table_name + "); "
+                        + "alter table " + part_table_name + " attach partition " + new_table
+                        + " for values with (modulus " + to_string(modulus) + ", remainder " + to_string(pnum) + ")";
+                }
+                pi->partition_names.push_back(new_table);
+                return;
+            }
+        }
+    }
+
     int type_chosen = d9();
-    if (type_chosen <= 3)
-        stmt_type = 0;
+    if (type_chosen <= 2)
+        stmt_type = 0;   // rename table
+    else if (type_chosen <= 4)
+        stmt_type = 1;   // rename column
+    else if (type_chosen <= 5)
+        stmt_type = 2;   // add column
     else if (type_chosen <= 6)
-        stmt_type = 1;
-    else 
-        stmt_type = 2;
+        stmt_type = 3;   // drop column
+    else if (type_chosen <= 7)
+        stmt_type = 4;   // modify column
+    else
+        stmt_type = 5;   // add index
 
     // choose the base table (not view)
     int size = scope->tables.size();
@@ -1685,8 +2749,52 @@ prod(parent), myscope(s)
         enable_type.push_back(scope->schema->datetype);
         auto type = random_pick<>(enable_type);
 
-        stmt_string = "alter table " + table_ref->ident() + " add column " + new_column_name 
+        stmt_string = "alter table " + table_ref->ident() + " add column " + new_column_name
                         + " " + type->name;
+    }
+    else if (stmt_type == 3) { // drop column
+        if (table_ref->columns().size() <= 3) {
+            // Too few columns, fall back to add column
+            stmt_type = 2;
+            auto new_column_name = unique_column_name();
+            vector<sqltype *> enable_type;
+            enable_type.push_back(scope->schema->inttype);
+            enable_type.push_back(scope->schema->realtype);
+            enable_type.push_back(scope->schema->texttype);
+            auto type = random_pick<>(enable_type);
+            stmt_string = "alter table " + table_ref->ident() + " add column " + new_column_name
+                            + " " + type->name;
+        } else {
+            column *column_ref;
+            while (1) {
+                column_ref = &random_pick(table_ref->columns());
+                if (column_ref->name != PKEY_IDENT && column_ref->name != schema::get_version_key_name())
+                    break;
+            }
+            stmt_string = "alter table " + table_ref->ident() + " drop column " + column_ref->name;
+        }
+    }
+    else if (stmt_type == 4) { // modify column (change type)
+        column *column_ref;
+        while (1) {
+            column_ref = &random_pick(table_ref->columns());
+            if (column_ref->name != PKEY_IDENT && column_ref->name != schema::get_version_key_name())
+                break;
+        }
+        vector<sqltype *> enable_type;
+        enable_type.push_back(scope->schema->inttype);
+        enable_type.push_back(scope->schema->realtype);
+        enable_type.push_back(scope->schema->texttype);
+        enable_type.push_back(scope->schema->datetype);
+        auto new_type = random_pick<>(enable_type);
+        stmt_string = "alter table " + table_ref->ident() + " modify column " + column_ref->name
+                        + " " + new_type->name;
+    }
+    else if (stmt_type == 5) { // add index
+        column *column_ref = &random_pick(table_ref->columns());
+        string idx_name = "idx_" + to_string(smith::rng() % 10000);
+        stmt_string = "alter table " + table_ref->ident() + " add index " + idx_name
+                        + " (" + column_ref->name + ")";
     }
 }
 
@@ -1914,6 +3022,10 @@ named_window::named_window(prod *p, struct scope *s):
             order_by.push_back(make_pair<>(col, is_asc));
         }
     }
+
+    // Generate frame clause with 50% probability (when DBMS supports it)
+    if (d6() > 3 && scope->schema->features.has_window_frame)
+        frame = make_shared<window_frame>(this);
 }
 
 void named_window::out(std::ostream &out)
@@ -1934,6 +3046,9 @@ void named_window::out(std::ostream &out)
                 out << ", ";
         }
     }
+    // Append frame clause if present
+    if (frame)
+        out << *frame;
     out << ")";
 }
 
@@ -2226,8 +3341,26 @@ shared_ptr<prod> statement_factory(struct scope *s)
             return make_shared<insert_select_stmt>((struct prod *)0, s);
         if (choice >= 10 && choice <= 12)
             return make_shared<common_table_expression>((struct prod *)0, s);
+        // Data-modifying CTE (only for DBMS that support it, e.g. PostgreSQL)
+        if (choice == 16 && s->schema->features.has_data_mod_cte)
+            return make_shared<data_modifying_cte>((struct prod *)0, s);
+        // MySQL REPLACE statement
+        if (choice == 17 && s->schema->features.has_replace)
+            return make_shared<replace_stmt>((struct prod *)0, s);
         if (choice >= 13 && choice <= 15)
             return make_shared<unioned_query>((struct prod *)0, s);
+        // MySQL EXPLAIN (low probability — use secondary dice)
+        if (s->schema->features.has_explain && d42() == 1)
+            return make_shared<explain_stmt>((struct prod *)0, s);
+        // MySQL table maintenance (very low probability)
+        if (schema::target_dbms == "mysql" && d42() == 1)
+            return make_shared<table_maintenance_stmt>((struct prod *)0, s);
+        // SAVEPOINT (low probability, only for DBMS that support it)
+        if (s->schema->features.has_savepoint && d42() == 1)
+            return make_shared<savepoint_stmt>((struct prod *)0, s);
+        // LOCK/UNLOCK TABLES (very low probability, MySQL only)
+        if (schema::target_dbms == "mysql" && d42() == 1)
+            return make_shared<lock_stmt>((struct prod *)0, s);
         return make_shared<query_spec>((struct prod *)0, s);
     } catch (runtime_error &e) {
         cerr << "catch a runtime error" << endl;
