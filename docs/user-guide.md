@@ -95,12 +95,29 @@ brew install sqlite mysql-client   # 可选
 
 ### 3.2 构建
 
+**方式 1：使用系统包（默认）**
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j$(nproc)
 ```
 
 构建完成后，可执行文件位于 `build/dbfuzz`。
+
+**方式 2：依赖打包（无需手动安装 DB 客户端库）**
+
+适用于 CentOS/RHEL 等缺少 libpqxx-dev、libmysqlclient-dev 的环境：
+```bash
+# 一键构建（自动安装构建工具 + 下载编译所有依赖）
+bash script/build_bundled.sh
+
+# 或手动
+cmake -B build -DUSE_BUNDLED_DEPS=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+```
+
+打包模式会从源码下载编译：SQLite3 amalgamation、MariaDB Connector/C、PostgreSQL libpq、libpqxx。首次构建约 5-10 分钟，产出自包含二进制（不依赖外部 .so 文件）。
+
+> **前置要求**：g++、cmake、git、autoconf、openssl-devel（通过 `script/build_bundled.sh` 自动安装）。
 
 ### 3.3 验证构建
 

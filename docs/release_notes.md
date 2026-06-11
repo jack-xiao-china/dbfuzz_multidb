@@ -1,5 +1,11 @@
 # Release Notes
 
+## v1.0.19 | 2026-06-11
+- 新增 [build]：CMake FetchContent 依赖打包 — `-DUSE_BUNDLED_DEPS=ON` 自动从源码下载编译 SQLite3 amalgamation、MariaDB Connector/C v3.4.5、PostgreSQL libpq REL_17_6、libpqxx 7.10.0
+- 新增 [build]：`cmake/bundled_*.cmake` 模块 — 5 个独立模块分别处理各依赖的下载和构建
+- 新增 [build]：`script/build_bundled.sh` — 一键构建脚本，自动检测 yum/dnf/apt-get 安装构建工具链
+- 优化 [CMake]：版本号升级至 1.0.19，find_package 添加 `if(NOT XXX_FOUND)` 守卫确保 bundled 优先
+
 ## v1.0.18 | 2026-06-11
 - 修复 [schema]：PostgreSQL 隔离级别设置 — `dut_libpq` 构造函数和 `reset()`/`reset_to_backup()` 重连后设置 REPEATABLE READ（与 MySQL 一致），消除 G1c 误报
 - 修复 [cross]：EET 变换空结果过滤 — 当变换后 SELECT 返回空而原始 SELECT 非空时，跳过 EET oracle，消除 87.5% 的跨库误报
