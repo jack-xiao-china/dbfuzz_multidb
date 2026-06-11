@@ -1,8 +1,14 @@
 cmake_minimum_required(VERSION 3.14)
-project(dbfuzz VERSION 1.0.18 LANGUAGES CXX)
+project(dbfuzz VERSION 1.0.19 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# --- Bundled dependencies (optional) ---
+option(USE_BUNDLED_DEPS "Download and build all DB client libraries from source" OFF)
+if(USE_BUNDLED_DEPS)
+    include(cmake/bundled_deps.cmake)
+endif()
 
 # --- Required dependencies ---
 
@@ -16,38 +22,49 @@ else()
     message(STATUS "Boost.Regex not found - using std::regex fallback")
 endif()
 
-# PkgConfig for libpqxx
-find_package(PkgConfig)
-
-# libpqxx: optional (needed for PostgreSQL schema)
-if(PkgConfig_FOUND)
-    pkg_check_modules(PQXX IMPORTED_TARGET libpqxx)
+# PkgConfig for libpqxx (skip if bundled)
+if(NOT PQXX_FOUND)
+    find_package(PkgConfig)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(PQXX IMPORTED_TARGET libpqxx)
+    endif()
 endif()
 
-# PostgreSQL: optional
-find_package(PostgreSQL)
+# PostgreSQL: optional (skip if bundled)
+if(NOT PostgreSQL_FOUND)
+    find_package(PostgreSQL)
+endif()
 
 if(NOT PQXX_FOUND OR NOT PostgreSQL_FOUND)
     message(STATUS "libpqxx or PostgreSQL not found - PostgreSQL schema support disabled")
 endif()
 
 # --- Optional dependencies ---
-find_package(SQLite3)
-if(SQLite3_FOUND)
-    set(HAVE_LIBSQLITE3 1)
-    message(STATUS "SQLite3 found: ${SQLite3_VERSION}")
+if(NOT SQLite3_FOUND)
+    find_package(SQLite3)
+    if(SQLite3_FOUND)
+        set(HAVE_LIBSQLITE3 1)
+        message(STATUS "SQLite3 found: ${SQLite3_VERSION}")
+    endif()
 endif()
 
-# mysqlclient: no standard CMake config, use manual find
-find_path(MYSQL_INCLUDE_DIR mysql/mysql.h)
-find_library(MYSQL_LIBRARY NAMES mysqlclient)
-if(MYSQL_INCLUDE_DIR AND MYSQL_LIBRARY)
-    set(mysqlclient_FOUND TRUE)
-    set(HAVE_MYSQL 1)
-    set(HAVE_TIDB 1)
-    message(STATUS "mysqlclient found: ${MYSQL_LIBRARY}")
+# mysqlclient: no standard CMake config, use manual find (skip if bundled)
+if(NOT mysqlclient_FOUND)
+    find_path(MYSQL_INCLUDE_DIR mysql/mysql.h)
+    find_library(MYSQL_LIBRARY NAMES mysqlclient)
+    if(MYSQL_INCLUDE_DIR AND MYSQL_LIBRARY)
+        set(mysqlclient_FOUND TRUE)
+        set(HAVE_MYSQL 1)
+        set(HAVE_TIDB 1)
+        message(STATUS "mysqlclient found: ${MYSQL_LIBRARY}")
+    else()
+        set(mysqlclient_FOUND FALSE)
+        message(STATUS "mysqlclient not found - MySQL/TiDB/MariaDB/OceanBase support disabled")
+    endif()
+endif()
 
-    # Check for nonblocking API (MySQL 8.x)
+# Check for nonblocking API (MySQL 8.x or MariaDB)
+if(mysqlclient_FOUND)
     include(CheckSymbolExists)
     set(CMAKE_REQUIRED_INCLUDES ${MYSQL_INCLUDE_DIR})
     set(CMAKE_REQUIRED_LIBRARIES ${MYSQL_LIBRARY})
@@ -55,9 +72,6 @@ if(MYSQL_INCLUDE_DIR AND MYSQL_LIBRARY)
     check_symbol_exists(mysql_real_query_start "mysql/mysql.h" HAVE_MARIADB)
     unset(CMAKE_REQUIRED_INCLUDES)
     unset(CMAKE_REQUIRED_LIBRARIES)
-else()
-    set(mysqlclient_FOUND FALSE)
-    message(STATUS "mysqlclient not found - MySQL/TiDB/MariaDB/OceanBase support disabled")
 endif()
 
 # --- Configure header ---
