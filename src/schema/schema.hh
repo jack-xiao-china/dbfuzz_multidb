@@ -116,6 +116,7 @@ struct schema {
     sqltype *internaltype = NULL;
     sqltype *arraytype = NULL;
     sqltype *datetype = NULL;
+    sqltype *enumtype = NULL;          // ENUM type for MySQL/GaussDB
 
     std::vector<sqltype *> types;
   
@@ -147,6 +148,7 @@ struct schema {
     const char *null_literal = "null";
 
     vector<string> available_collation;
+    vector<string> available_enum_defs;   // Pre-defined ENUM definitions e.g. "ENUM('a','b','c')"
     bool enable_partial_index = false; // can or cannot use where in indexes
     vector<string> available_table_options;
     bool enable_analyze_stmt = false; //  can or cannot use analyze statement
@@ -208,6 +210,17 @@ struct schema {
         bool has_partition_select   = false;  // SELECT ... PARTITION (p0)
         bool has_partition_default  = false;  // DEFAULT partition (PG)
         bool has_attach_partition   = false;  // ATTACH/DETACH PARTITION (PG)
+
+        // MySQL 8.0 P0 features
+        bool has_check_constraint   = false;  // CHECK (expr) in CREATE TABLE
+        bool has_generated_column   = false;  // col AS (expr) STORED/VIRTUAL
+        bool has_enum_type          = false;  // ENUM('val1','val2',...)
+        bool has_xa_transaction     = false;  // XA START/END/PREPARE/COMMIT/ROLLBACK
+        bool has_set_isolation      = false;  // SET TRANSACTION ISOLATION LEVEL
+        bool has_correlated_subq    = false;  // correlated subqueries in WHERE
+        bool has_multi_table_update = false;  // UPDATE t1, t2 SET ...
+        bool has_multi_table_delete = false;  // DELETE t1 FROM t1 JOIN t2
+        bool has_json_table         = false;  // JSON_TABLE() table function
     };
     db_feature_flags features;
 

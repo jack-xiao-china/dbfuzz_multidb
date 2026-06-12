@@ -530,6 +530,15 @@ struct create_table_stmt: prod {
     int partition_col_id = -1;  // column index used for partitioning (-1 = none)
     int subpartition_col_id = -1;  // column index for sub-partitioning (-1 = none)
     vector<string> partition_subtable_stmts;  // PG: CREATE TABLE ... PARTITION OF statements
+
+    // Generated columns (MySQL 8.0 P0)
+    struct gen_col_def {
+        string name;
+        string type_name;
+        string expr_str;
+        string storage;  // "virtual" or "stored"
+    };
+    vector<gen_col_def> generated_columns;
     virtual void out(std::ostream &out);
     create_table_stmt(prod *parent, struct scope *s);
     virtual void accept(prod_visitor *v) {
@@ -679,6 +688,54 @@ struct set_stmt : prod {
   virtual void accept(prod_visitor *v) {
     v->visit(this);
   }
+};
+
+// SET TRANSACTION ISOLATION LEVEL (MySQL 8.0 P0)
+struct set_isolation_stmt : prod {
+  string isolation_level;
+  set_isolation_stmt(prod *p, struct scope *s);
+  virtual ~set_isolation_stmt() {}
+  virtual void out(std::ostream &out);
+  virtual void accept(prod_visitor *v) { v->visit(this); }
+};
+
+// Multi-table UPDATE (MySQL 8.0 P0)
+// UPDATE t1, t2 SET t1.a = expr WHERE t1.id = t2.id
+struct multi_table_update_stmt : prod {
+    struct scope myscope;
+    shared_ptr<table_ref> table_refs;
+    vector<pair<named_relation*, shared_ptr<struct set_list>>> set_clauses;
+    shared_ptr<bool_expr> search;
+    multi_table_update_stmt(prod *p, struct scope *s);
+    virtual ~multi_table_update_stmt() {}
+    virtual void out(std::ostream &out);
+    virtual void accept(prod_visitor *v) { v->visit(this); search->accept(v); }
+};
+
+// Multi-table DELETE (MySQL 8.0 P0)
+// DELETE t1 [, t2] FROM table_references WHERE condition
+struct multi_table_delete_stmt : prod {
+    struct scope myscope;
+    vector<string> delete_targets;
+    shared_ptr<table_ref> table_refs;
+    shared_ptr<bool_expr> search;
+    multi_table_delete_stmt(prod *p, struct scope *s);
+    virtual ~multi_table_delete_stmt() {}
+    virtual void out(std::ostream &out);
+    virtual void accept(prod_visitor *v) { v->visit(this); search->accept(v); }
+};
+
+// XA transaction statements (MySQL 8.0 P0)
+struct xa_stmt : prod {
+  enum xa_type { XA_START, XA_END, XA_PREPARE, XA_COMMIT, XA_ROLLBACK };
+  xa_type type;
+  string xid;
+  bool one_phase;
+  static int xa_counter;
+  xa_stmt(prod *p, struct scope *s);
+  virtual ~xa_stmt() {}
+  virtual void out(std::ostream &out);
+  virtual void accept(prod_visitor *v) { v->visit(this); }
 };
 
 #define SPACE_HOLDER_STMT "select 1 from (select 1) as subq_0 where 0 <> 0"

@@ -501,6 +501,14 @@ schema_mysql::schema_mysql(string db, unsigned int port,
     FUNC1(JSON_TYPE, texttype, jsontype);
     FUNC1(JSON_UNQUOTE, texttype, jsontype);
 
+    // ── ENUM type (MySQL 8.0 P0) ──
+    enumtype = sqltype::get("ENUM");
+    available_enum_defs.push_back("ENUM('red','green','blue')");
+    available_enum_defs.push_back("ENUM('small','medium','large','xlarge')");
+    available_enum_defs.push_back("ENUM('active','inactive','pending','deleted')");
+    available_enum_defs.push_back("ENUM('yes','no','maybe')");
+    available_enum_defs.push_back("ENUM('low','medium','high','critical')");
+
     // ── Date/Time functions (Sprint 4) ──
     FUNC(NOW, datetype);
     FUNC(CURDATE, datetype);
@@ -664,6 +672,17 @@ schema_mysql::schema_mysql(string db, unsigned int port,
     features.has_subpartition       = true;
     features.has_partition_mgmt     = true;
     features.has_partition_select   = true;
+
+    // MySQL 8.0 P0 features
+    features.has_check_constraint   = true;
+    features.has_generated_column   = true;
+    features.has_enum_type          = true;
+    features.has_xa_transaction     = true;
+    features.has_set_isolation      = true;
+    features.has_correlated_subq    = true;
+    features.has_multi_table_update = true;
+    features.has_multi_table_delete = true;
+    features.has_json_table         = true;
 
     // Sprint 4: sql_mode SET parameters
     supported_setting["SESSION sql_mode"] = {

@@ -1,4 +1,5 @@
 #include "expr/bool_expr/bool_expr.hh"
+#include "expr/bool_expr/correlated_subquery.hh"
 #include "expr/expr.hh"
 
 shared_ptr<bool_expr> bool_expr::factory(prod *p)
@@ -35,6 +36,9 @@ shared_ptr<bool_expr> bool_expr::factory(prod *p)
             return make_shared<sounds_like_expr>(p, p->scope);
         else if (choose == 44 && p->scope->schema->features.has_mysql_json)
             return make_shared<member_of_expr>(p);
+        else if (choose == 45 && p->scope->schema->features.has_correlated_subq
+                 && !p->scope->refs.empty())
+            return make_shared<correlated_subquery>(p);
         else
             return make_shared<exists_predicate>(p);
         //     return make_shared<distinct_pred>(q);

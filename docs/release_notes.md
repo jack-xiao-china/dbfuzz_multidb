@@ -1,5 +1,19 @@
 # Release Notes
 
+## v1.0.20 | 2026-06-11
+- 新增 [grammar]：CHECK 约束 — `CHECK (expr)` 在 CREATE TABLE 中，~11% 概率生成（MySQL 8.0 强制执行）
+- 新增 [grammar]：SET TRANSACTION ISOLATION LEVEL — 随机选择 4 种隔离级别，statement_factory + txn_statement_factory 中低概率生成
+- 新增 [grammar]：XA 事务 — XA START/END/PREPARE/COMMIT/ROLLBACK，含 ONE PHASE 选项，MySQL 专用
+- 新增 [grammar]：ENUM 数据类型 — 5 种预定义 ENUM 定义，~10% 概率生成 ENUM 列
+- 新增 [grammar]：生成列 — `col type GENERATED ALWAYS AS (expr) VIRTUAL|STORED`，~15% 概率，引用同表已有列
+- 新增 [grammar]：多表 UPDATE — `UPDATE t1, t2 SET t1.a = expr WHERE ...`，MySQL 专用
+- 新增 [grammar]：多表 DELETE — `DELETE t1 FROM t1 JOIN t2 ON ... WHERE ...`，MySQL 专用
+- 新增 [expr]：关联子查询 — `EXISTS (SELECT 1 FROM t2 WHERE t2.c = t1.c)` / 标量子查询关联，bool_expr factory 中 ~2% 概率
+- 新增 [grammar]：JSON_TABLE — `JSON_TABLE(json_col, '$[*]' COLUMNS (...))` 表函数，table_ref factory 中 ~3% 概率
+- 新增 [schema]：9 个 feature flags — has_check_constraint, has_generated_column, has_enum_type, has_xa_transaction, has_set_isolation, has_correlated_subq, has_multi_table_update, has_multi_table_delete, has_json_table
+- 优化 [schema]：mysql.cc 注册 enumtype + available_enum_defs（5 种预定义 ENUM 定义）
+- 文档 [分析]：`docs/mysql80-syntax-coverage-analysis.md` — MySQL 8.0 语法覆盖度完整分析报告
+
 ## v1.0.19 | 2026-06-11
 - 新增 [build]：CMake FetchContent 依赖打包 — `-DUSE_BUNDLED_DEPS=ON` 自动从源码下载编译 SQLite3 amalgamation、MariaDB Connector/C v3.4.5、PostgreSQL libpq REL_17_6、libpqxx 7.10.0
 - 新增 [build]：`cmake/bundled_*.cmake` 模块 — 5 个独立模块分别处理各依赖的下载和构建

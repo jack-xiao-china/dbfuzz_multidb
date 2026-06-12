@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <cassert>
+#include "grammar/json_table.hh"
 
 #include "core/random.hh"
 #include "core/relmodel.hh"
@@ -85,6 +86,16 @@ shared_ptr<table_ref> table_ref::factory(prod *p, bool no_join) {
 	            return make_shared<table_subquery>(p);
             if (no_join == false && d6() > 3)
 	            return make_shared<joined_table>(p);
+        }
+        // JSON_TABLE table function (low probability, MySQL only)
+        if (p->scope->schema->features.has_json_table
+            && schema::target_dbms == "mysql"
+            && d100() <= 3) {
+            try {
+                return make_shared<json_table_ref>(p);
+            } catch (...) {
+                // Fall through to base table if no JSON columns available
+            }
         }
         return make_shared<table_or_query_name>(p);
     } catch (runtime_error &e) {
@@ -2093,17 +2104,57 @@ create_table_stmt::create_table_stmt(prod *parent, struct scope *s)
         column create_column(column_name, type);
         created_table->columns().push_back(create_column);
         string constraint_str = "";
-        if (type == scope->schema->texttype && 
+        if (type == scope->schema->texttype &&
             !scope->schema->available_collation.empty() &&
             d6() <= 3) {
             constraint_str += "collate " + random_pick(scope->schema->available_collation);
         }
 
-        // if (d6() == 1) 
-        //     constraint_str += "not null ";
-        // if (d6() == 1)
-        //     constraint_str += "unique ";
+        // ENUM column (MySQL 8.0 P0 — ~10% probability)
+        if (scope->schema->features.has_enum_type
+            && scope->schema->enumtype
+            && !scope->schema->available_enum_defs.empty()
+            && d9() == 1) {
+            // Replace this column's type with ENUM definition
+            constraint_str = random_pick(scope->schema->available_enum_defs);
+        }
+
         constraints.push_back(constraint_str);
+    }
+
+    // Generated column (MySQL 8.0 P0 — ~15% probability, max 1 per table)
+    if (scope->schema->features.has_generated_column && d6() == 1 && column_num >= 2) {
+        try {
+            // Pick a type for the generated column
+            vector<sqltype *> gen_types = {
+                scope->schema->inttype, scope->schema->texttype, scope->schema->realtype
+            };
+            auto gen_type = random_pick(gen_types);
+
+            // Add the table to scope->refs so the expression can reference existing columns
+            scope->refs.push_back(&(*created_table));
+            auto gen_expr = value_expr::factory(this, gen_type);
+            ostringstream expr_stream;
+            gen_expr->out(expr_stream);
+
+            string gen_col_name = unique_column_name();
+            string storage = (d6() <= 4) ? "virtual" : "stored";
+
+            gen_col_def gc;
+            gc.name = gen_col_name;
+            gc.type_name = gen_type->name;
+            gc.expr_str = expr_stream.str();
+            gc.storage = storage;
+            generated_columns.push_back(gc);
+
+            // Also add to created_table so other parts of code see the column
+            // (but we track it in generated_columns for special output handling)
+            column gen_column(gen_col_name, gen_type);
+            created_table->columns().push_back(gen_column);
+            constraints.push_back("__GENERATED__");  // marker for output
+        } catch (...) {
+            // If expression generation fails, skip generated column
+        }
     }
 
     // assign a primary key (so cannot use insert select, as it will automatically assign primary key value)
@@ -2210,15 +2261,13 @@ create_table_stmt::create_table_stmt(prod *parent, struct scope *s)
         has_engine = true;
         table_engine = random_pick(scope->schema->supported_table_engine);
     }
-    
-    
 
-    // // check clause
-    // if (d9() == 1) {
-    //     has_check = true;
-    //     scope->refs.push_back(&(*created_table));
-    //     check_expr = bool_expr::factory(this);
-    // }
+    // CHECK constraint (MySQL 8.0+, GaussDB)
+    if (scope->schema->features.has_check_constraint && d9() == 1) {
+        has_check = true;
+        scope->refs.push_back(&(*created_table));
+        check_expr = bool_expr::factory(this);
+    }
 }
 
 void create_table_stmt::out(std::ostream &out)
@@ -2229,10 +2278,24 @@ void create_table_stmt::out(std::ostream &out)
 
     auto columns_in_table = created_table->columns();
     int column_num = columns_in_table.size();
+    int gen_col_idx = 0;
     for (int i = 0; i < column_num; i++) {
-        out << columns_in_table[i].name << " ";
-        out << columns_in_table[i].type->name << " ";
-        out << constraints[i];
+        if (constraints[i] == "__GENERATED__") {
+            // Generated column output
+            if (gen_col_idx < (int)generated_columns.size()) {
+                auto &gc = generated_columns[gen_col_idx];
+                out << gc.name << " " << gc.type_name
+                    << " generated always as (" << gc.expr_str << ") " << gc.storage;
+                gen_col_idx++;
+            }
+        } else if (constraints[i].find("ENUM(") == 0) {
+            // ENUM column: type embedded in constraint
+            out << columns_in_table[i].name << " " << constraints[i];
+        } else {
+            out << columns_in_table[i].name << " ";
+            out << columns_in_table[i].type->name << " ";
+            out << constraints[i];
+        }
         if (i != column_num - 1)
             out << ",";
         indent(out);
@@ -3291,9 +3354,144 @@ set_stmt::set_stmt(prod* p, struct scope *s) : prod(p), myscope(s)
     value = random_pick<>(it->second);
 }
 
-void set_stmt::out(std::ostream &out) 
+void set_stmt::out(std::ostream &out)
 {
     out << "SET " << parm << " = " << value;
+}
+
+// ── Multi-table UPDATE (MySQL 8.0 P0) ──
+multi_table_update_stmt::multi_table_update_stmt(prod *p, struct scope *s)
+    : prod(p), myscope(s)
+{
+    scope = &myscope;
+    scope->tables = s->tables;
+
+    // Generate table references (JOINs)
+    table_refs = table_ref::factory(this);
+
+    // Add referenced tables to scope for WHERE clause and SET expressions
+    for (auto ref : table_refs->refs) {
+        scope->refs.push_back(&*ref);
+    }
+
+    // Generate SET clauses for up to 2 tables
+    int num_tables = min((int)table_refs->refs.size(), 2);
+    for (int i = 0; i < num_tables; i++) {
+        auto ref = table_refs->refs[i];
+        auto t = dynamic_cast<table*>(&*ref);
+        if (t) {
+            auto sl = make_shared<struct set_list>(this, t);
+            set_clauses.push_back({&*ref, sl});
+        }
+    }
+    if (set_clauses.empty())
+        throw runtime_error("multi_table_update: no valid SET targets");
+
+    // Generate WHERE condition
+    search = bool_expr::factory(this);
+}
+
+void multi_table_update_stmt::out(std::ostream &out)
+{
+    out << "update ";
+    out << *table_refs;
+    indent(out);
+    out << "set ";
+    for (size_t i = 0; i < set_clauses.size(); i++) {
+        out << *set_clauses[i].second;
+        if (i + 1 < set_clauses.size())
+            out << ", ";
+    }
+    indent(out);
+    out << "where " << *search;
+}
+
+// ── Multi-table DELETE (MySQL 8.0 P0) ──
+multi_table_delete_stmt::multi_table_delete_stmt(prod *p, struct scope *s)
+    : prod(p), myscope(s)
+{
+    scope = &myscope;
+    scope->tables = s->tables;
+
+    // Generate table references (JOINs)
+    table_refs = table_ref::factory(this);
+
+    // Pick 1-2 tables to delete from
+    int num_targets = min((int)table_refs->refs.size(), d6() <= 3 ? 1 : 2);
+    for (int i = 0; i < num_targets; i++) {
+        delete_targets.push_back(table_refs->refs[i]->ident());
+    }
+    if (delete_targets.empty())
+        throw runtime_error("multi_table_delete: no targets");
+
+    // Add referenced tables to scope for WHERE clause
+    for (auto ref : table_refs->refs) {
+        scope->refs.push_back(&*ref);
+    }
+
+    // Generate WHERE condition
+    search = bool_expr::factory(this);
+}
+
+void multi_table_delete_stmt::out(std::ostream &out)
+{
+    out << "delete ";
+    for (size_t i = 0; i < delete_targets.size(); i++) {
+        out << delete_targets[i];
+        if (i + 1 < delete_targets.size())
+            out << ", ";
+    }
+    indent(out);
+    out << "from ";
+    out << *table_refs;
+    indent(out);
+    out << "where " << *search;
+}
+
+// ── SET TRANSACTION ISOLATION LEVEL (MySQL 8.0 P0) ──
+set_isolation_stmt::set_isolation_stmt(prod *p, struct scope *s) : prod(p)
+{
+    static vector<string> levels = {
+        "READ UNCOMMITTED", "READ COMMITTED", "REPEATABLE READ", "SERIALIZABLE"
+    };
+    isolation_level = random_pick(levels);
+}
+
+void set_isolation_stmt::out(std::ostream &out)
+{
+    if (schema::target_dbms == "postgres" || schema::target_dbms == "gaussdb_a") {
+        out << "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " << isolation_level;
+    } else {
+        out << "SET SESSION TRANSACTION ISOLATION LEVEL " << isolation_level;
+    }
+}
+
+// ── XA Transaction Statements (MySQL 8.0 P0) ──
+int xa_stmt::xa_counter = 0;
+
+xa_stmt::xa_stmt(prod *p, struct scope *s) : prod(p), one_phase(false)
+{
+    type = static_cast<xa_type>(d6() % 5);  // 0-4: START, END, PREPARE, COMMIT, ROLLBACK
+    xa_counter++;
+    xid = "xa_" + to_string(xa_counter);
+
+    if (type == XA_COMMIT && d6() <= 2) {
+        one_phase = true;
+    }
+}
+
+void xa_stmt::out(std::ostream &out)
+{
+    switch (type) {
+        case XA_START:    out << "XA START '" << xid << "'"; break;
+        case XA_END:      out << "XA END '" << xid << "'"; break;
+        case XA_PREPARE:  out << "XA PREPARE '" << xid << "'"; break;
+        case XA_COMMIT:
+            out << "XA COMMIT '" << xid << "'";
+            if (one_phase) out << " ONE PHASE";
+            break;
+        case XA_ROLLBACK: out << "XA ROLLBACK '" << xid << "'"; break;
+    }
 }
 
 shared_ptr<prod> statement_factory(struct scope *s)
@@ -3361,6 +3559,18 @@ shared_ptr<prod> statement_factory(struct scope *s)
         // LOCK/UNLOCK TABLES (very low probability, MySQL only)
         if (schema::target_dbms == "mysql" && d42() == 1)
             return make_shared<lock_stmt>((struct prod *)0, s);
+        // SET TRANSACTION ISOLATION LEVEL (low probability)
+        if (s->schema->features.has_set_isolation && d42() == 1)
+            return make_shared<set_isolation_stmt>((struct prod *)0, s);
+        // XA transaction statements (low probability, MySQL only)
+        if (s->schema->features.has_xa_transaction && schema::target_dbms == "mysql" && d42() == 1)
+            return make_shared<xa_stmt>((struct prod *)0, s);
+        // Multi-table UPDATE (low probability, MySQL only)
+        if (s->schema->features.has_multi_table_update && schema::target_dbms == "mysql" && d42() == 1)
+            return make_shared<multi_table_update_stmt>((struct prod *)0, s);
+        // Multi-table DELETE (low probability, MySQL only)
+        if (s->schema->features.has_multi_table_delete && schema::target_dbms == "mysql" && d42() == 1)
+            return make_shared<multi_table_delete_stmt>((struct prod *)0, s);
         return make_shared<query_spec>((struct prod *)0, s);
     } catch (runtime_error &e) {
         cerr << "catch a runtime error" << endl;
@@ -3434,6 +3644,12 @@ shared_ptr<prod> txn_statement_factory(struct scope *s, int choice)
         s->new_stmt();
         if (choice == -1)
             choice = d12();
+        // XA transaction statements (low probability in txn mode)
+        if (s->schema->features.has_xa_transaction && schema::target_dbms == "mysql" && d20() == 1)
+            return make_shared<xa_stmt>((struct prod *)0, s);
+        // SET TRANSACTION ISOLATION LEVEL (low probability)
+        if (s->schema->features.has_set_isolation && d20() == 1)
+            return make_shared<set_isolation_stmt>((struct prod *)0, s);
         // should not have ddl statement, which will auto commit in tidb;
         if (choice <= 2)
             return make_shared<delete_stmt>((struct prod *)0, s);

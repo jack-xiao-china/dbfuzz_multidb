@@ -84,6 +84,7 @@ add_library(expr_objs OBJECT
     expr/bool_expr/quantified_comparison.cc
     expr/bool_expr/regexp_expr.cc
     expr/bool_expr/member_of_expr.cc
+    expr/bool_expr/correlated_subquery.cc
     expr/json_expr.cc
     expr/row_constructor.cc
     expr/cast_expr.cc
@@ -195,6 +196,14 @@ add_library(smoke_objs OBJECT
 apply_common(smoke_objs)
 
 # ============================================================
+# json_table_objs (JSON_TABLE table function)
+# ============================================================
+add_library(json_table_objs OBJECT
+    grammar/json_table.cc
+)
+apply_common(json_table_objs)
+
+# ============================================================
 # Final executable
 # ============================================================
 add_executable(dbfuzz
@@ -207,6 +216,7 @@ add_executable(dbfuzz
     $<TARGET_OBJECTS:eet_objs>
     $<TARGET_OBJECTS:cross_objs>
     $<TARGET_OBJECTS:smoke_objs>
+    $<TARGET_OBJECTS:json_table_objs>
 )
 
 target_include_directories(dbfuzz PRIVATE ${ALL_INCLUDE_DIRS})
